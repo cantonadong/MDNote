@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/sys/windows"
 )
 
 // App struct holds the Wails runtime context that fs/dialog calls need.
@@ -68,6 +69,23 @@ func (a *App) notifyOpenFile(path string) {
 // GetSettings returns the persisted portable settings (root dir etc.).
 func (a *App) GetSettings() (Settings, error) {
 	return loadSettings()
+}
+
+// SaveAppSettings persists the settings page's two toggles (language,
+// outline auto-numbering) without disturbing the rest of Settings (root
+// dir, open tabs, ...), which is why it loads-then-overwrites just these
+// two fields rather than taking a whole Settings struct from the frontend.
+func (a *App) SaveAppSettings(language string, outlineAutoNumber bool) (Settings, error) {
+	s, err := loadSettings()
+	if err != nil {
+		return Settings{}, err
+	}
+	s.Language = language
+	s.OutlineAutoNumber = outlineAutoNumber
+	if err := saveSettings(s); err != nil {
+		return Settings{}, err
+	}
+	return s, nil
 }
 
 // SaveOpenTabs records which files are currently open (and which is
@@ -241,10 +259,23 @@ func (a *App) FileExists(path string) bool {
 
 // OpenWithDefaultApp launches path with whatever program Windows has
 // associated with its file type, for "file link" blocks pointing at
-// non-markdown files.
+// non-markdown files (e.g. .xlsx opens in Excel). Uses ShellExecuteW
+// directly rather than `cmd /c start`: the latter briefly flashes a visible
+// console window (cmd.exe is a console-subsystem process) before the real
+// target app appears, and also re-parses the whole command line for shell
+// metacharacters (&, |, ^, ...) that can appear in ordinary file paths —
+// same class of problem OpenURL below already avoids for web links.
+// ShellExecuteW talks to the shell directly, no intermediate process at all.
 func (a *App) OpenWithDefaultApp(path string) error {
-	cmd := exec.Command("cmd", "/c", "start", "", path)
-	return cmd.Start()
+	verb, err := syscall.UTF16PtrFromString("open")
+	if err != nil {
+		return err
+	}
+	file, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	return windows.ShellExecute(0, verb, file, nil, nil, windows.SW_SHOWNORMAL)
 }
 
 // OpenURL opens a web URL in the user's system default browser (typed/

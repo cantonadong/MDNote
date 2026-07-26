@@ -47,3 +47,39 @@ input {
 button {
   -webkit-app-region: no-drag;
 }
+
+/* PDF export ("导出" toolbar button) drives this via window.print() — only
+   the document body should print, not the app chrome around it. */
+@media print {
+  html,
+  body {
+    height: auto;
+    overflow: visible;
+  }
+  .sidebar,
+  .outline,
+  .tabs,
+  .toolbar,
+  .find-replace,
+  .status-bar,
+  .overlay,
+  .toast,
+  .drag-ghost,
+  .block-drag-ghost,
+  .handle-group,
+  .block-menu {
+    display: none !important;
+  }
+  .app-shell,
+  .main-col,
+  .editor-scroll {
+    height: auto !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+  .editor-content-col-wrapper {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+  }
+}

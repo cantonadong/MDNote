@@ -1,9 +1,10 @@
 <script lang="ts">
+  import { fade } from "svelte/transition";
   import { appState } from "$lib/appState.svelte";
 </script>
 
 {#if appState.toast}
-  <div class="toast">{appState.toast}</div>
+  <div class="toast" transition:fade={{ duration: 200 }}>{appState.toast}</div>
 {/if}
 
 <style>

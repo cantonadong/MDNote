@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { Editor } from "@tiptap/core";
   import { TextSelection } from "@tiptap/pm/state";
+  import { Fragment } from "@tiptap/pm/model";
   import StarterKit from "@tiptap/starter-kit";
   import { Markdown } from "tiptap-markdown";
   import { Placeholder } from "@tiptap/extensions";
@@ -14,16 +15,31 @@
   import Icon from "./Icon.svelte";
   import { api } from "$lib/api";
   import { appState, type LinkPick } from "$lib/appState.svelte";
+  import { t } from "$lib/i18n.svelte";
   import { editorBridge } from "$lib/editor/bridge.svelte";
   import { buildOutline } from "$lib/editor/outline";
   import { countWords } from "$lib/wordcount";
   import { SearchHighlight } from "$lib/editor/searchHighlight";
   import { ToggleList, ToggleSummary } from "$lib/editor/nodes/toggleList";
   import { Callout } from "$lib/editor/nodes/callout";
+  import { Columns, Column } from "$lib/editor/nodes/columns";
   import { PageLink, FileLink, LinkClickHandler } from "$lib/editor/nodes/links";
   import { SlashTrigger } from "$lib/editor/nodes/slashTrigger";
   import { FullwidthHeadingShortcut } from "$lib/editor/nodes/fullwidthShortcuts";
   import { slashMenuState } from "$lib/editor/slashMenu.svelte";
+  import {
+    findTable,
+    rowCount,
+    colCount,
+    addRow as tableAddRow,
+    deleteRow as tableDeleteRow,
+    moveRow as tableMoveRow,
+    addColumn as tableAddColumn,
+    deleteColumn as tableDeleteColumn,
+    moveColumn as tableMoveColumn,
+    slotIndex,
+    slotToTargetIndex,
+  } from "$lib/editor/tableOps";
 
   let element: HTMLDivElement;
   let wrapperEl: HTMLDivElement;
@@ -35,13 +51,28 @@
 
   let handleTop = $state<number | null>(null);
   let handleHeight = $state(24);
+  // 30x30 reads better than the old fixed 28x28, but only when the hovered
+  // row is tall enough to fit it (headings render much taller than plain
+  // text, e.g.) — falls back to 28x28 for a normal-height text row rather
+  // than visibly overflowing it.
+  let handleBtnSize = $derived(handleHeight >= 30 ? 30 : 28);
   let menuOpen = $state(false);
+  // Which button opened the block-type menu — determines what clicking an
+  // item in it actually does (see insertBlock's mode parameter): "add" (the
+  // "+" button) inserts a new block after the current line; "change" (the
+  // ⠿ drag handle, clicked rather than dragged) converts the current line
+  // in place.
+  let menuMode: "add" | "change" = "add";
   let slashPos = $state({ top: 0, left: 0 });
   // Icon name for the "+" handle: null (generic plus) for a plain paragraph,
   // or the matching blockTypes icon when the hovered/cursor block already
   // has a real format — see updateHandle(), which keeps this in sync with
   // handleTop/handleHeight.
   let handleFormatIcon = $state<string | null>(null);
+  // Whether the hovered/cursor block is empty — drives the "+" button's
+  // tooltip (and nothing else; insertBlock recomputes emptiness itself at
+  // click time rather than trusting this cached copy).
+  let handleIsEmpty = $state(true);
   // Ctrl+wheel content zoom, percent — applied to wrapperEl itself
   // (.editor-content-col-wrapper) so its own max-width/padding scale too,
   // genuinely widening the reading column rather than just cramming bigger
@@ -111,40 +142,239 @@
   // horizontally within what's actually one unchanging line.
   let hoverClientY: number | null = null;
 
+  // -- Table row/column add/delete/drag gutters --
+
+  interface TableGutter {
+    tablePos: number;
+    tableTop: number;
+    tableBottom: number;
+    tableLeft: number;
+    tableRight: number;
+    // Container(wrapperEl)-relative rects, in the same "zoomed" pixel space
+    // as everything else computed via getBoundingClientRect() in this file
+    // (see the editorZoom comment near the top) — divided by zoomScale only
+    // at render time in the template.
+    rows: { top: number; bottom: number }[];
+    cols: { left: number; right: number }[];
+  }
+  let tableGutter = $state<TableGutter | null>(null);
+  // Set while a row/column grip is being dragged; used only to stop
+  // onContentMouseMove/onContentMouseLeave from clearing tableGutter out
+  // from under an in-progress drag.
+  let tableDragActive = false;
+  let tableDropRowY = $state<number | null>(null);
+  let tableDropColX = $state<number | null>(null);
+
+  function updateTableGutter(tableEl: HTMLTableElement) {
+    if (!editor || !wrapperEl) return;
+    let ref: ReturnType<typeof findTable> = null;
+    try {
+      const pos = editor.view.posAtDOM(tableEl, 0);
+      ref = findTable(editor, pos);
+    } catch {
+      ref = null;
+    }
+    if (!ref) {
+      tableGutter = null;
+      return;
+    }
+    const containerRect = wrapperEl.getBoundingClientRect();
+    const tableRect = tableEl.getBoundingClientRect();
+    const rowEls = Array.from(tableEl.rows);
+    const rows = rowEls.map((r) => {
+      const rect = r.getBoundingClientRect();
+      return { top: rect.top - containerRect.top, bottom: rect.bottom - containerRect.top };
+    });
+    const firstRowCells = rowEls[0] ? Array.from(rowEls[0].cells) : [];
+    const cols = firstRowCells.map((c) => {
+      const rect = c.getBoundingClientRect();
+      return { left: rect.left - containerRect.left, right: rect.right - containerRect.left };
+    });
+    tableGutter = {
+      tablePos: ref.pos,
+      tableTop: tableRect.top - containerRect.top,
+      tableBottom: tableRect.bottom - containerRect.top,
+      tableLeft: tableRect.left - containerRect.left,
+      tableRight: tableRect.right - containerRect.left,
+      rows,
+      cols,
+    };
+  }
+
+  function currentTableRef() {
+    if (!editor || !tableGutter) return null;
+    return findTable(editor, tableGutter.tablePos);
+  }
+
+  function onAddTableRow() {
+    const ref = currentTableRef();
+    if (!editor || !ref) return;
+    tableAddRow(editor, ref, rowCount(ref.node));
+    tableGutter = null;
+  }
+
+  function onAddTableColumn() {
+    const ref = currentTableRef();
+    if (!editor || !ref) return;
+    tableAddColumn(editor, ref, colCount(ref.node));
+    tableGutter = null;
+  }
+
+  function onRowGripPointerDown(e: PointerEvent, index: number) {
+    if (e.button !== 0 || !editor || !wrapperEl || !tableGutter) return;
+    const gutter = tableGutter;
+    const mids = gutter.rows.map((r) => (r.top + r.bottom) / 2);
+    const containerTop = wrapperEl.getBoundingClientRect().top;
+    let started = false;
+    let slot = index;
+
+    function onMove(ev: PointerEvent) {
+      ev.preventDefault();
+      if (!started) {
+        started = true;
+        tableDragActive = true;
+      }
+      // Both containerTop and ev.clientY are raw viewport coordinates,
+      // already reflecting whatever CSS zoom is applied — same "screen
+      // delta" space gutter.rows/cols were captured in, so no zoomScale
+      // conversion is needed here (only the *rendered* indicator position
+      // below needs dividing by zoomScale, same reasoning as handleTop).
+      const localY = ev.clientY - containerTop;
+      slot = slotIndex(mids, localY);
+      const boundaryY =
+        slot === 0 ? gutter.rows[0].top : slot === gutter.rows.length ? gutter.rows[gutter.rows.length - 1].bottom : (gutter.rows[slot - 1].bottom + gutter.rows[slot].top) / 2;
+      tableDropRowY = boundaryY;
+    }
+
+    function finish() {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      tableDragActive = false;
+      tableDropRowY = null;
+      if (started) {
+        const ref = currentTableRef();
+        if (ref) tableMoveRow(editor!, ref, index, slotToTargetIndex(slot, index));
+        tableGutter = null;
+      } else {
+        // Plain click, no drag: delete this row.
+        const ref = currentTableRef();
+        if (ref) tableDeleteRow(editor!, ref, index);
+        tableGutter = null;
+      }
+    }
+
+    function onUp() {
+      finish();
+    }
+    function onCancel() {
+      finish();
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+  }
+
+  function onColGripPointerDown(e: PointerEvent, index: number) {
+    if (e.button !== 0 || !editor || !wrapperEl || !tableGutter) return;
+    const gutter = tableGutter;
+    const mids = gutter.cols.map((c) => (c.left + c.right) / 2);
+    const containerLeft = wrapperEl.getBoundingClientRect().left;
+    let started = false;
+    let slot = index;
+
+    function onMove(ev: PointerEvent) {
+      ev.preventDefault();
+      if (!started) {
+        started = true;
+        tableDragActive = true;
+      }
+      const localX = ev.clientX - containerLeft;
+      slot = slotIndex(mids, localX);
+      const boundaryX =
+        slot === 0 ? gutter.cols[0].left : slot === gutter.cols.length ? gutter.cols[gutter.cols.length - 1].right : (gutter.cols[slot - 1].right + gutter.cols[slot].left) / 2;
+      tableDropColX = boundaryX;
+    }
+
+    function finish() {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      tableDragActive = false;
+      tableDropColX = null;
+      if (started) {
+        const ref = currentTableRef();
+        if (ref) tableMoveColumn(editor!, ref, index, slotToTargetIndex(slot, index));
+        tableGutter = null;
+      } else {
+        const ref = currentTableRef();
+        if (ref) tableDeleteColumn(editor!, ref, index);
+        tableGutter = null;
+      }
+    }
+
+    function onUp() {
+      finish();
+    }
+    function onCancel() {
+      finish();
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+  }
+
   // Types that need an async pick/create step (file dialog or a new file on
   // disk) before there's anything to insert.
-  const ASYNC_KEYS = new Set(["pageLink", "fileLink", "newPage"]);
+  const ASYNC_KEYS = new Set(["fileLink", "newPage", "webLink"]);
 
-  const blockTypes = [
-    { key: "paragraph", label: "文本", icon: "text", keywords: ["text", "paragraph"] },
-    { key: "h1", label: "标题 1", icon: "h1", keywords: ["h1", "heading1", "title1"] },
-    { key: "h2", label: "标题 2", icon: "h2", keywords: ["h2", "heading2", "title2"] },
-    { key: "h3", label: "标题 3", icon: "h3", keywords: ["h3", "heading3", "title3"] },
-    { key: "h4", label: "标题 4", icon: "h4", keywords: ["h4", "heading4", "title4"] },
-    { key: "bulletList", label: "项目列表", icon: "list-bullet", keywords: ["bullet", "list", "ul"] },
-    { key: "orderedList", label: "编号列表", icon: "list-ordered", keywords: ["number", "ordered", "ol"] },
-    { key: "taskList", label: "待办列表", icon: "check-square", keywords: ["todo", "task", "checkbox"] },
-    { key: "toggleList", label: "折叠列表", icon: "toggle", keywords: ["toggle", "collapse", "details"] },
-    { key: "callout", label: "高亮块", icon: "megaphone", keywords: ["callout", "note", "highlight"] },
-    { key: "blockquote", label: "引用", icon: "quote", keywords: ["quote", "blockquote"] },
-    { key: "codeBlock", label: "代码块", icon: "code", keywords: ["code", "codeblock"] },
-    { key: "table", label: "表格", icon: "table", keywords: ["table"] },
-    { key: "horizontalRule", label: "分割线", icon: "minus", keywords: ["hr", "divider", "line"] },
-    { key: "newPage", label: "新建页面", icon: "page", keywords: ["page", "newpage"] },
-    { key: "pageLink", label: "页面链接", icon: "link", keywords: ["pagelink", "link"] },
-    { key: "fileLink", label: "文件链接", icon: "link", keywords: ["filelink", "file"] },
-  ];
+  let blockTypes = $derived([
+    { key: "paragraph", label: t("block.paragraph"), icon: "text", keywords: ["text", "paragraph"] },
+    { key: "h1", label: t("block.h1"), icon: "h1", keywords: ["h1", "heading1", "title1"] },
+    { key: "h2", label: t("block.h2"), icon: "h2", keywords: ["h2", "heading2", "title2"] },
+    { key: "h3", label: t("block.h3"), icon: "h3", keywords: ["h3", "heading3", "title3"] },
+    { key: "h4", label: t("block.h4"), icon: "h4", keywords: ["h4", "heading4", "title4"] },
+    { key: "h5", label: t("block.h5"), icon: "h5", keywords: ["h5", "heading5", "title5"] },
+    { key: "h6", label: t("block.h6"), icon: "h6", keywords: ["h6", "heading6", "title6"] },
+    { key: "bulletList", label: t("block.bulletList"), icon: "list-bullet", keywords: ["bullet", "list", "ul"] },
+    { key: "orderedList", label: t("block.orderedList"), icon: "list-ordered", keywords: ["number", "ordered", "ol"] },
+    { key: "taskList", label: t("block.taskList"), icon: "check-square", keywords: ["todo", "task", "checkbox"] },
+    { key: "toggleList", label: t("block.toggleList"), icon: "toggle", keywords: ["toggle", "collapse", "details"] },
+    { key: "callout", label: t("block.callout"), icon: "megaphone", keywords: ["callout", "note", "highlight"] },
+    { key: "blockquote", label: t("block.blockquote"), icon: "quote", keywords: ["quote", "blockquote"] },
+    { key: "codeBlock", label: t("block.codeBlock"), icon: "code", keywords: ["code", "codeblock"] },
+    { key: "table", label: t("block.table"), icon: "table", keywords: ["table"] },
+    { key: "columns2", label: t("block.columns2"), icon: "columns", keywords: ["column", "columns", "分列", "分栏"] },
+    { key: "columns3", label: t("block.columns3"), icon: "columns", keywords: ["column", "columns", "分列", "分栏"] },
+    { key: "columns4", label: t("block.columns4"), icon: "columns", keywords: ["column", "columns", "分列", "分栏"] },
+    { key: "columns5", label: t("block.columns5"), icon: "columns", keywords: ["column", "columns", "分列", "分栏"] },
+    { key: "horizontalRule", label: t("block.horizontalRule"), icon: "minus", keywords: ["hr", "divider", "line"] },
+    { key: "webLink", label: t("block.webLink"), icon: "globe", keywords: ["weblink", "link", "url", "http", "网址"] },
+    { key: "newPage", label: t("block.newPage"), icon: "page", keywords: ["page", "newpage"] },
+    { key: "fileLink", label: t("block.fileLink"), icon: "link", keywords: ["filelink", "file"] },
+  ]);
 
   // Which blockTypes key a real ProseMirror node corresponds to — null for a
   // plain paragraph, which isn't considered to "have a format" (the handle
   // shows the generic "+" for it, same as always). Used both to pick the
   // handle's icon and to decide whether clicking a menu item should convert
   // the block in place instead of inserting a new one after it.
-  function blockTypeKeyFor(node: import("@tiptap/pm/model").Node | null | undefined): string | null {
+  // parentTypeName disambiguates listItem, which by itself doesn't say
+  // whether it's sitting in a bulletList or an orderedList.
+  function blockTypeKeyFor(
+    node: import("@tiptap/pm/model").Node | null | undefined,
+    parentTypeName?: string,
+  ): string | null {
     if (!node) return null;
     switch (node.type.name) {
       case "heading":
         return `h${node.attrs.level}`;
+      case "columns":
+        return `columns${node.attrs.count}`;
+      case "listItem":
+        return parentTypeName === "orderedList" ? "orderedList" : "bulletList";
+      case "taskItem":
+        return "taskList";
       case "bulletList":
       case "orderedList":
       case "taskList":
@@ -158,6 +388,58 @@
       default:
         return null;
     }
+  }
+
+  // The list-item-shaped node's containing list — needed to split that list
+  // around just this one item when converting/dragging it (a listItem can't
+  // just be replaced in place with a non-listItem: bulletList/orderedList/
+  // taskList's schema only allows listItem/taskItem children directly).
+  interface ListItemContext {
+    listPos: number;
+    listNode: import("@tiptap/pm/model").Node;
+    itemIndex: number;
+  }
+  function listContextAt(pos: number): ListItemContext | null {
+    if (!editor) return null;
+    const resolved = editor.state.doc.resolve(pos);
+    const parent = resolved.parent;
+    if (parent.type.name !== "bulletList" && parent.type.name !== "orderedList" && parent.type.name !== "taskList") {
+      return null;
+    }
+    return { listPos: resolved.before(resolved.depth), listNode: parent, itemIndex: resolved.index(resolved.depth) };
+  }
+
+  // The smallest "row" the handle/drag UI should treat pos as belonging to.
+  // For a bulletList/orderedList/taskList, every item shares one top-level
+  // block, so resolving to depth 1 (as everything else does — a paragraph,
+  // heading, table, etc. is already its own top-level block) would make
+  // every single item in a 10-item list resolve to the *same* position: the
+  // whole list. Hovering/clicking line 2 of a list would then act on line 1
+  // (the list's start). Stopping at the nearest listItem/taskItem ancestor
+  // instead makes each item independently addressable.
+  function effectiveBlockPos(resolved: import("@tiptap/pm/model").ResolvedPos): number {
+    for (let d = resolved.depth; d > 0; d--) {
+      const name = resolved.node(d).type.name;
+      if (name === "listItem" || name === "taskItem") return resolved.before(d);
+    }
+    return resolved.before(1);
+  }
+
+  // "Empty" for the purposes of deciding whether the "+" button replaces
+  // this line in place vs. inserts a fresh one after it. Plain
+  // node.content.size === 0 only works for a bare paragraph/heading — a
+  // blockquote/callout/toggle/list-item always wraps at least one paragraph,
+  // so its content.size is never literally 0 even when that inner paragraph
+  // has no text. Tables/horizontalRule are never treated as "empty" here:
+  // replacing either of those in place via "+" would be surprising.
+  function isEffectivelyEmpty(node: import("@tiptap/pm/model").Node): boolean {
+    if (node.type.name === "table" || node.type.name === "horizontalRule") return false;
+    if (node.textContent.length > 0) return false;
+    let hasAtom = false;
+    node.descendants((child) => {
+      if (child.isAtom && !child.isText) hasAtom = true;
+    });
+    return !hasAtom;
   }
 
   let slashItems = $derived.by(() => {
@@ -201,7 +483,7 @@
     if (!editor) return null;
     const { $from: sel } = editor.state.selection;
     if (sel.depth < 1) return null;
-    return sel.before(1);
+    return effectiveBlockPos(sel);
   }
 
   function updateHandle() {
@@ -224,8 +506,11 @@
       if (!menuOpen) handleTop = null;
       return;
     }
-    const formatKey = blockTypeKeyFor(editor.state.doc.nodeAt(pos));
+    const hoveredNode = editor.state.doc.nodeAt(pos);
+    const listContext = listContextAt(pos);
+    const formatKey = blockTypeKeyFor(hoveredNode, listContext?.listNode.type.name);
     handleFormatIcon = formatKey ? (blockTypes.find((bt) => bt.key === formatKey)?.icon ?? null) : null;
+    handleIsEmpty = hoveredNode ? isEffectivelyEmpty(hoveredNode) : true;
     const lineRect = lineRectNear(pos, hoverClientY);
     if (!lineRect) {
       handleTop = null;
@@ -398,7 +683,12 @@
   function onMarginPointerDown(e: PointerEvent) {
     if (e.button !== 0 || !editor) return;
     const target = e.target as HTMLElement | null;
-    if (target?.closest?.(".tiptap, .handle-group, .block-menu, .block-drag-ghost, .block-drop-indicator")) return;
+    if (
+      target?.closest?.(
+        ".tiptap, .handle-group, .block-menu, .block-drag-ghost, .block-drop-indicator, .table-gutter-btn, .table-gutter-add",
+      )
+    )
+      return;
     const anchorPos = blockPosAtClientPoint(e.clientX, e.clientY);
     if (anchorPos === null) return;
     const startX = e.clientX;
@@ -444,7 +734,7 @@
     const text = node.textContent.trim();
     if (text) return text.length > 40 ? `${text.slice(0, 40)}…` : text;
     const key = blockTypeKeyFor(node);
-    return blockTypes.find((bt) => bt.key === key)?.label ?? "内容块";
+    return blockTypes.find((bt) => bt.key === key)?.label ?? t("editor.contentBlock");
   }
 
   // -- Hover tracking: which top-level block is the mouse currently over --
@@ -462,12 +752,19 @@
     if (!result) return;
     const resolved = editor.state.doc.resolve(result.pos);
     if (resolved.depth < 1) return;
-    const pos = resolved.before(1);
+    const pos = effectiveBlockPos(resolved);
     hoverClientY = e.clientY;
     if (pos !== hoverBlockPos) {
       hoverBlockPos = pos;
     }
     updateHandle();
+
+    const tableEl = (e.target as HTMLElement)?.closest?.("table") as HTMLTableElement | null;
+    if (tableEl) {
+      updateTableGutter(tableEl);
+    } else if (tableGutter && !tableDragActive) {
+      tableGutter = null;
+    }
   }
 
   function onContentMouseLeave() {
@@ -475,6 +772,7 @@
     hoverBlockPos = null;
     hoverClientY = null;
     if (!menuOpen) updateHandle();
+    if (!tableDragActive) tableGutter = null;
   }
 
   // Double-clicking the wrapper's own margin (its 56px/64px/30vh padding
@@ -490,7 +788,12 @@
   function onWrapperDblClick(e: MouseEvent) {
     if (!editor) return;
     const target = e.target as HTMLElement | null;
-    if (target?.closest?.(".tiptap, .handle-group, .block-menu, .block-drag-ghost, .block-drop-indicator")) return;
+    if (
+      target?.closest?.(
+        ".tiptap, .handle-group, .block-menu, .block-drag-ghost, .block-drop-indicator, .table-gutter-btn, .table-gutter-add",
+      )
+    )
+      return;
     const box = editor.view.dom.getBoundingClientRect();
     const x = Math.min(Math.max(e.clientX, box.left + 1), box.right - 1);
     const y = Math.min(Math.max(e.clientY, box.top + 1), box.bottom - 1);
@@ -523,7 +826,16 @@
     if (!result) return;
     const resolved = editor.state.doc.resolve(result.pos);
     if (resolved.depth < 1) return;
-    const blockPos = resolved.before(1);
+    let blockPos = effectiveBlockPos(resolved);
+    if (multiSelectDragging) {
+      // A multi-block group selection has no sensible single-row form, so
+      // it can't be wrapped into one list item — always target whole
+      // top-level positions for it, same as before per-item targeting
+      // existed. A single-row drag (the common case) can target any row,
+      // in any list, or any top-level block — commitBlockMove wraps/
+      // unwraps as needed to fit wherever it lands.
+      blockPos = resolved.before(1);
+    }
     if (blockPos >= dragSource.from && blockPos < dragSource.to) {
       // Hovering over the dragged block's own (former) range — no-op target.
       dropTargetPos = null;
@@ -562,6 +874,7 @@
     if (targetPos === null) return;
     const targetNode = editor.state.doc.nodeAt(targetPos);
     if (!targetNode) return;
+    const sourceNode = editor.state.doc.nodeAt(source.from);
     // doc.slice rather than a single doc.nodeAt(source.from): source can now
     // be either one block (the "⋮⋮" handle) or a whole multi-select range
     // (dragging a group by one of its members' handles) — both are just a
@@ -569,16 +882,78 @@
     // either without the caller needing to special-case which one it is.
     const slice = editor.state.doc.slice(source.from, source.to);
     if (slice.content.size === 0) return;
+
+    const sourceRowType =
+      sourceNode?.type.name === "listItem" || sourceNode?.type.name === "taskItem" ? sourceNode.type.name : null;
+    const targetRowType =
+      targetNode.type.name === "listItem" || targetNode.type.name === "taskItem" ? targetNode.type.name : null;
+
+    // What's actually being placed at the destination: unwrapped one level
+    // (the row's own children, not the row itself) when the source is a
+    // list/task row — group drags never resolve to one, so this is always
+    // the plain slice content for those.
+    const coreChildren: import("@tiptap/pm/model").Node[] = [];
+    if (sourceRowType && sourceNode) {
+      sourceNode.content.forEach((child) => coreChildren.push(child));
+    } else {
+      slice.content.forEach((child) => coreChildren.push(child));
+    }
+    // Re-wrapped into whatever row type the destination needs (listItem for
+    // a bulletList/orderedList target, taskItem for a taskList target), or
+    // left as top-level content when landing outside any list — this one
+    // path covers dropping a plain block into the middle of a list,
+    // dragging a list row out to become a plain block, and moving a row
+    // between differently-typed lists (bullet/ordered share the listItem
+    // node type already; list<->task additionally goes through this
+    // wrap/unwrap). listItem requires its first child specifically be a
+    // paragraph (schema: "paragraph block*") — prepend an empty one if the
+    // dragged content doesn't start with one (e.g. a heading or table),
+    // rather than leaving a schema-invalid list item.
+    let insertFragment: Fragment;
+    try {
+      if (targetRowType) {
+        const rowType = editor.state.schema.nodes[targetRowType];
+        const attrs = targetRowType === "taskItem" ? { checked: false } : null;
+        let children = coreChildren;
+        if (children[0]?.type.name !== "paragraph") {
+          children = [editor.state.schema.nodes.paragraph.create(), ...children];
+        }
+        insertFragment = Fragment.from(rowType.create(attrs, children));
+      } else {
+        insertFragment = Fragment.from(coreChildren);
+      }
+    } catch {
+      // Schema rejected the wrap (e.g. a taskItem only accepts paragraphs,
+      // no headings/tables/etc.) — leave the document untouched rather than
+      // half-apply an invalid move.
+      appState.showToast(t("editor.cannotDropHere"));
+      return;
+    }
+
+    // If the dragged row is the *only* item in its list, deleting just that
+    // item would leave an empty list behind (bulletList/orderedList/
+    // taskList's schema requires at least one child) — widen the deletion
+    // to the whole list in that case, since there'd be nothing left in it.
+    let deleteFrom = source.from;
+    let deleteTo = source.to;
+    if (sourceRowType) {
+      const sourceStartResolved = editor.state.doc.resolve(source.from);
+      const sourceParent = sourceStartResolved.parent;
+      if (sourceParent.childCount === 1) {
+        deleteFrom = sourceStartResolved.before(sourceStartResolved.depth);
+        deleteTo = deleteFrom + sourceParent.nodeSize;
+      }
+    }
     let insertPos = position === "before" ? targetPos : targetPos + targetNode.nodeSize;
-    let tr = editor.state.tr.delete(source.from, source.to);
+    let tr = editor.state.tr.delete(deleteFrom, deleteTo);
     // Deleting the source shifts every position after it; correct the
     // target position for that before inserting there.
-    if (insertPos > source.to) {
-      insertPos -= source.to - source.from;
-    } else if (insertPos > source.from) {
-      insertPos = source.from;
+    if (insertPos > deleteTo) {
+      insertPos -= deleteTo - deleteFrom;
+    } else if (insertPos > deleteFrom) {
+      insertPos = deleteFrom;
     }
-    tr = tr.insert(insertPos, slice.content);
+    tr = tr.insert(insertPos, insertFragment);
     editor.view.dispatch(tr);
     updateHandle();
     scheduleSync();
@@ -596,6 +971,10 @@
     if (pos === null) return;
     // Grabbing a handle that belongs to an already-selected group drags the
     // whole group, not just that one row — same gesture, bigger source range.
+    // Multi-select ranges are always whole top-level blocks (blockPosAtClientPoint
+    // never resolves into a list item), so comparing the listItem-aware pos
+    // against it still works: a list item's start position falls inside its
+    // list's [from,to) range whenever that list is part of the selection.
     const isGroupDrag = !!multiSelectRange && pos >= multiSelectRange.from && pos < multiSelectRange.to;
     let source: { from: number; to: number };
     let ghostLabel: string;
@@ -648,8 +1027,13 @@
       if (started) {
         commitBlockMove();
       } else {
+        // Plain click, no drag: opens the same menu as the "+" handle, but
+        // in "change" mode — always converts the current line in place
+        // (per-item for a list line, via insertBlock's listContext handling)
+        // regardless of whether it has content.
         dragSource = null;
         dropTargetPos = null;
+        toggleMenu("change");
       }
     }
 
@@ -731,6 +1115,10 @@
         return { type: "heading", attrs: { level: 3 } };
       case "h4":
         return { type: "heading", attrs: { level: 4 } };
+      case "h5":
+        return { type: "heading", attrs: { level: 5 } };
+      case "h6":
+        return { type: "heading", attrs: { level: 6 } };
       case "bulletList":
         return { type: "bulletList", content: [{ type: "listItem", content: [{ type: "paragraph" }] }] };
       case "orderedList":
@@ -766,6 +1154,25 @@
             },
           ],
         };
+      case "columns2":
+      case "columns3":
+      case "columns4":
+      case "columns5": {
+        // Paired with a trailing empty paragraph (same reasoning as
+        // horizontalRule below): with content:"block+", Enter inside a
+        // column only ever adds another paragraph within that column, so
+        // without this there'd be no way to land the cursor after the whole
+        // layout to keep writing normally.
+        const count = Number(key[key.length - 1]);
+        return [
+          {
+            type: "columns",
+            attrs: { count },
+            content: Array.from({ length: count }, () => ({ type: "column", content: [{ type: "paragraph" }] })),
+          },
+          { type: "paragraph" },
+        ];
+      }
       case "horizontalRule":
         // A bare horizontalRule is an atom with no inner text position at
         // all — landing the cursor "inside" it after insertion isn't
@@ -781,7 +1188,14 @@
       case "fileLink":
         return {
           type: "paragraph",
-          content: extra ? [{ type: key, attrs: { path: extra.path, title: extra.title } }] : [],
+          content: extra ? [{ type: key, attrs: { path: extra.path, id: extra.id ?? null } }] : [],
+        };
+      case "webLink":
+        return {
+          type: "paragraph",
+          content: extra
+            ? [{ type: "text", text: extra.title, marks: [{ type: "link", attrs: { href: extra.path } }] }]
+            : [],
         };
       default:
         return { type: "paragraph" };
@@ -799,6 +1213,8 @@
     "h2",
     "h3",
     "h4",
+    "h5",
+    "h6",
     "bulletList",
     "orderedList",
     "taskList",
@@ -837,6 +1253,8 @@
       case "h2":
       case "h3":
       case "h4":
+      case "h5":
+      case "h6":
         return { type: "heading", attrs: { level: Number(key[1]) }, content: inline };
       case "bulletList":
       case "orderedList":
@@ -862,10 +1280,48 @@
     }
   }
 
+  // Converting/replacing a list ITEM (as opposed to a normal top-level
+  // block) can't just insertContentAt over its range: bulletList/
+  // orderedList/taskList's schema only allows listItem/taskItem children
+  // directly, so dropping a heading/paragraph/different-list-type node
+  // straight into that range would violate it. Instead, split the
+  // containing list around this one item — items before it stay in a
+  // (possibly now-shorter) list, items after it become a second list, and
+  // the new content goes in between, collapsing to a plain whole-list
+  // replace when the item was the list's only child.
+  function convertListItem(listContext: ListItemContext, newContent: Record<string, unknown> | Record<string, unknown>[]) {
+    if (!editor) return;
+    const { listPos, listNode, itemIndex } = listContext;
+    const listType = listNode.type;
+    const beforeChildren: import("@tiptap/pm/model").Node[] = [];
+    const afterChildren: import("@tiptap/pm/model").Node[] = [];
+    for (let i = 0; i < listNode.childCount; i++) {
+      if (i < itemIndex) beforeChildren.push(listNode.child(i));
+      else if (i > itemIndex) afterChildren.push(listNode.child(i));
+    }
+    const pieces: Record<string, unknown>[] = [];
+    let landingOffset = 0;
+    if (beforeChildren.length) {
+      const beforeList = listType.create(listNode.attrs, beforeChildren);
+      pieces.push(beforeList.toJSON());
+      landingOffset = beforeList.nodeSize;
+    }
+    pieces.push(...(Array.isArray(newContent) ? newContent : [newContent]));
+    if (afterChildren.length) {
+      pieces.push(listType.create(listNode.attrs, afterChildren).toJSON());
+    }
+    editor
+      .chain()
+      .focus()
+      .insertContentAt({ from: listPos, to: listPos + listNode.nodeSize }, pieces)
+      .run();
+    placeCursorNear(listPos + landingOffset);
+  }
+
   async function resolveAsyncExtra(key: string): Promise<LinkPick | null> {
-    if (key === "pageLink") return appState.pickPageLink();
     if (key === "fileLink") return appState.pickFileLink();
     if (key === "newPage") return appState.createNewPageNear(appState.activeTab?.path ?? null);
+    if (key === "webLink") return appState.pickWebLink();
     return null;
   }
 
@@ -967,27 +1423,27 @@
   // since hovering a different block than the cursor is the whole point of
   // a hover-driven handle.
   //
-  // Three outcomes, in priority order:
-  //  1. The block already has a real format (heading/list/quote/...) and a
-  //     target that can hold text was picked — "turn into": the block's own
-  //     text is preserved and reshaped into the new type in place. This is
-  //     the handleFormatIcon path: the handle already looked like the
-  //     current format, so clicking it reads as "change this", not "add a
-  //     new block".
-  //  2. The block is empty (the common "just clicked + on a blank line"
-  //     case) — converted in place, no new line appears below it.
-  //  3. Otherwise (plain paragraph with text, or a non-text-shaped target
-  //     like a table) — a new block is inserted after it, so existing text
-  //     is never silently discarded.
-  async function insertBlock(key: string) {
+  // mode distinguishes which button opened the menu — see the "+"/drag
+  // handle onclick handlers below:
+  //  - "change" (drag handle, ⠿): always "turn into" — the line's own text
+  //    is preserved and reshaped into the new type in place, regardless of
+  //    whether it's empty.
+  //  - "add" (the "+" button): a fresh block is inserted *after* the
+  //    current line, current content left untouched — matching its literal
+  //    "add a new block" label. The one exception is an empty line, which
+  //    has nothing to preserve or displace either way, so both modes
+  //    collapse to the same in-place replace for it (nothing left behind).
+  async function insertBlock(key: string, mode: "add" | "change" = "add") {
     if (!editor) return;
     const pos = hoverBlockPos ?? topLevelBlockPos();
     if (pos === null) return;
     const node = editor.state.doc.nodeAt(pos);
     if (!node) return;
-    const isEmpty = node.content.size === 0;
-    const currentFormatKey = blockTypeKeyFor(node);
+    const empty = isEffectivelyEmpty(node);
+    const listContext = listContextAt(pos);
+    const currentFormatKey = blockTypeKeyFor(node, listContext?.listNode.type.name);
     const blockEnd = pos + node.nodeSize;
+    const wantsConvert = empty || mode === "change";
 
     let effectiveKey = key;
     let extra: LinkPick | undefined;
@@ -996,35 +1452,64 @@
       const picked = await resolveAsyncExtra(key);
       if (!picked || !editor) return;
       extra = picked;
-      effectiveKey = "pageLink";
+      // newPage isn't a real node type — it creates a file then drops a
+      // pageLink chip pointing at it. pageLink/fileLink themselves must stay
+      // as-is here, or picking "文件链接" would silently insert a pageLink
+      // chip (internal appState.openPath navigation) instead of a fileLink
+      // chip (opens with the OS default app) — same bug for both call sites.
+      effectiveKey = key === "newPage" ? "pageLink" : key;
     }
     if (!editor) return;
 
-    if (currentFormatKey && !isEmpty && CONVERTIBLE_KEYS.has(effectiveKey)) {
+    if (wantsConvert && currentFormatKey && CONVERTIBLE_KEYS.has(effectiveKey)) {
+      if (effectiveKey === currentFormatKey) {
+        // Already this format — nothing to do (also avoids gratuitously
+        // fragmenting a list into before/after pieces around a no-op).
+        menuOpen = false;
+        return;
+      }
       const inline = extractInlineContent(node);
       const content = buildConvertedContent(effectiveKey, inline);
-      editor.chain().focus().insertContentAt({ from: pos, to: blockEnd }, content).run();
-      placeCursorNear(pos);
-    } else {
-      const content = buildBlockContent(effectiveKey, extra);
-      if (isEmpty) {
+      if (listContext) {
+        convertListItem(listContext, content);
+      } else {
         editor.chain().focus().insertContentAt({ from: pos, to: blockEnd }, content).run();
         placeCursorNear(pos);
-      } else {
-        editor.chain().focus().insertContentAt(blockEnd, content).run();
-        placeCursorNear(blockEnd);
       }
+    } else if (empty) {
+      // Empty, but the target isn't a content-preserving "turn into" type
+      // (table/hr/pageLink/...) — still replace in place rather than
+      // leaving a stray empty line behind.
+      const content = buildBlockContent(effectiveKey, extra);
+      if (listContext) {
+        convertListItem(listContext, content);
+      } else {
+        editor.chain().focus().insertContentAt({ from: pos, to: blockEnd }, content).run();
+        placeCursorNear(pos);
+      }
+    } else {
+      // Non-empty line, "add" mode: leave it untouched, insert the new
+      // block right after it.
+      const content = buildBlockContent(effectiveKey, extra);
+      editor.chain().focus().insertContentAt(blockEnd, content).run();
+      placeCursorNear(blockEnd);
     }
     menuOpen = false;
     updateHandle();
   }
 
-  // Slash menu: replaces the current (empty, trigger-only) top-level block in place.
+  // Slash menu: replaces the current (empty, trigger-only) row in place —
+  // "row" being the nearest listItem/taskItem when typed inside a list item,
+  // same reasoning as effectiveBlockPos, so typing "/" on line 2 of a list
+  // doesn't replace the whole list.
   async function applySlash(key: string) {
     if (!editor) return;
     const { $from: cursor } = editor.state.selection;
-    const blockStart = cursor.before(1);
-    const blockEnd = cursor.after(1);
+    const blockStart = effectiveBlockPos(cursor);
+    const blockNode = editor.state.doc.nodeAt(blockStart);
+    if (!blockNode) return;
+    const blockEnd = blockStart + blockNode.nodeSize;
+    const listContext = listContextAt(blockStart);
     slashMenuState.close();
 
     let effectiveKey = key;
@@ -1033,17 +1518,27 @@
       const picked = await resolveAsyncExtra(key);
       if (!picked || !editor) return;
       extra = picked;
-      effectiveKey = "pageLink";
+      // newPage isn't a real node type — it creates a file then drops a
+      // pageLink chip pointing at it. pageLink/fileLink themselves must stay
+      // as-is here, or picking "文件链接" would silently insert a pageLink
+      // chip (internal appState.openPath navigation) instead of a fileLink
+      // chip (opens with the OS default app) — same bug for both call sites.
+      effectiveKey = key === "newPage" ? "pageLink" : key;
     }
     if (!editor) return;
     const content = buildBlockContent(effectiveKey, extra);
-    editor.chain().focus().insertContentAt({ from: blockStart, to: blockEnd }, content).run();
-    placeCursorNear(blockStart);
+    if (listContext) {
+      convertListItem(listContext, content);
+    } else {
+      editor.chain().focus().insertContentAt({ from: blockStart, to: blockEnd }, content).run();
+      placeCursorNear(blockStart);
+    }
     updateHandle();
   }
 
-  function toggleMenu() {
+  function toggleMenu(mode: "add" | "change" = "add") {
     menuOpen = !menuOpen;
+    menuMode = mode;
     if (menuOpen) slashMenuState.close();
   }
 
@@ -1095,11 +1590,13 @@
         ToggleList,
         ToggleSummary,
         Callout,
+        Columns,
+        Column,
         PageLink,
         FileLink,
         LinkClickHandler,
         Placeholder.configure({
-          placeholder: "按 / 快速插入格式",
+          placeholder: t("editor.placeholder"),
         }),
       ],
       content: appState.activeTab?.content ?? "",
@@ -1213,30 +1710,32 @@
       <div class="handle-group" style={`top:${handleTop / zoomScale}px; height:${handleHeight / zoomScale}px`}>
         <button
           class="block-handle"
-          title={handleFormatIcon ? "更改格式" : "添加"}
-          aria-label={handleFormatIcon ? "更改格式" : "添加"}
+          class:handle-lg={handleBtnSize === 30}
+          title={handleFormatIcon && handleIsEmpty ? t("block.changeFormat") : t("block.add")}
+          aria-label={handleFormatIcon && handleIsEmpty ? t("block.changeFormat") : t("block.add")}
           onmousedown={preventBlur}
           onclick={(e) => {
             e.stopPropagation();
-            toggleMenu();
+            toggleMenu("add");
           }}
         >
-          <Icon name={handleFormatIcon ?? "plus"} size={19} />
+          <Icon name={handleFormatIcon ?? "plus"} size={handleBtnSize === 30 ? 21 : 19} />
         </button>
         <button
           class="drag-handle"
-          title="拖拽移动"
-          aria-label="拖拽移动"
+          class:handle-lg={handleBtnSize === 30}
+          title={handleFormatIcon ? t("block.dragOrChange") : t("block.drag")}
+          aria-label={handleFormatIcon ? t("block.dragOrChange") : t("block.drag")}
           onmousedown={preventBlur}
           onpointerdown={onDragHandlePointerDown}
         >
-          <Icon name="grip" size={18} />
+          <Icon name="grip" size={handleBtnSize === 30 ? 20 : 18} />
         </button>
       </div>
       {#if menuOpen}
         <div class="block-menu" style={`top:${(handleTop + handleHeight + 2) / zoomScale}px`}>
           {#each blockTypes as bt (bt.key)}
-            <button onmousedown={preventBlur} onclick={() => insertBlock(bt.key)}>
+            <button onmousedown={preventBlur} onclick={() => insertBlock(bt.key, menuMode)}>
               <Icon name={bt.icon} size={14} />
               <span>{bt.label}</span>
             </button>
@@ -1247,13 +1746,71 @@
     {#if dropIndicatorTop !== null}
       <div class="block-drop-indicator" style={`top:${dropIndicatorTop / zoomScale}px`}></div>
     {/if}
+    {#if tableGutter}
+      {#each tableGutter.rows as row, i (i)}
+        <button
+          class="table-gutter-btn table-row-grip"
+          style={`top:${(row.top + row.bottom) / 2 / zoomScale - 10}px; left:${tableGutter.tableLeft / zoomScale - 26}px`}
+          title={t("table.rowGrip")}
+          aria-label={t("table.rowGrip")}
+          onmousedown={preventBlur}
+          onpointerdown={(e) => onRowGripPointerDown(e, i)}
+        >
+          <Icon name="grip" size={13} />
+        </button>
+      {/each}
+      <button
+        class="table-gutter-add table-add-row"
+        style={`top:${tableGutter.tableBottom / zoomScale}px; left:${tableGutter.tableLeft / zoomScale}px; width:${(tableGutter.tableRight - tableGutter.tableLeft) / zoomScale}px`}
+        title={t("table.addRow")}
+        aria-label={t("table.addRow")}
+        onmousedown={preventBlur}
+        onclick={onAddTableRow}
+      >
+        <Icon name="plus" size={13} />
+      </button>
+      {#each tableGutter.cols as col, i (i)}
+        <button
+          class="table-gutter-btn table-col-grip"
+          style={`left:${(col.left + col.right) / 2 / zoomScale - 10}px; top:${tableGutter.tableTop / zoomScale - 24}px`}
+          title={t("table.colGrip")}
+          aria-label={t("table.colGrip")}
+          onmousedown={preventBlur}
+          onpointerdown={(e) => onColGripPointerDown(e, i)}
+        >
+          <Icon name="grip" size={13} />
+        </button>
+      {/each}
+      <button
+        class="table-gutter-add table-add-col"
+        style={`left:${tableGutter.tableRight / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px`}
+        title={t("table.addCol")}
+        aria-label={t("table.addCol")}
+        onmousedown={preventBlur}
+        onclick={onAddTableColumn}
+      >
+        <Icon name="plus" size={13} />
+      </button>
+    {/if}
+    {#if tableDropRowY !== null && tableGutter}
+      <div
+        class="table-drop-indicator table-drop-row"
+        style={`top:${tableDropRowY / zoomScale}px; left:${tableGutter.tableLeft / zoomScale}px; width:${(tableGutter.tableRight - tableGutter.tableLeft) / zoomScale}px`}
+      ></div>
+    {/if}
+    {#if tableDropColX !== null && tableGutter}
+      <div
+        class="table-drop-indicator table-drop-col"
+        style={`left:${tableDropColX / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px`}
+      ></div>
+    {/if}
     {#if slashMenuState.open}
       <div
         class="block-menu slash-menu"
         style={`top:${slashPos.top / zoomScale}px; left:${slashPos.left / zoomScale}px`}
       >
         {#if slashItems.length === 0}
-          <div class="slash-empty">无匹配格式</div>
+          <div class="slash-empty">{t("block.slashEmpty")}</div>
         {:else}
           {#each slashItems as bt, i (bt.key)}
             <button
@@ -1318,6 +1875,13 @@
     background: transparent;
     color: var(--text-secondary);
     cursor: pointer;
+  }
+  /* Bumped up from 28x28 when the hovered row is tall enough to fit it
+     without visibly overflowing (see handleBtnSize) — e.g. a heading line. */
+  .block-handle.handle-lg,
+  .drag-handle.handle-lg {
+    width: 30px;
+    height: 30px;
   }
   .drag-handle {
     cursor: grab;
@@ -1426,11 +1990,54 @@
     gap: 8px;
   }
   .editor-content-col :global(.tiptap ul[data-type="taskList"] li > label) {
-    margin-top: 0.35em;
+    display: flex;
+    align-items: center;
+    /* Matches the text's own 1.6 line-height so the checkbox centers against
+       exactly the same vertical span as the first line next to it — more
+       reliable than eyeballing a margin-top offset, since the browser's
+       default UA stylesheet also gives <input type="checkbox"> its own
+       intrinsic margin that was stacking with ours and pushing it further
+       out of alignment. */
+    height: 1.6em;
+    margin: 0;
     user-select: none;
+  }
+  /* appearance:none + a hand-drawn box/checkmark, rather than sizing the
+     native control via width/height/margin/accent-color: the native
+     checkbox's *own* rendering still carries browser-controlled internal
+     metrics that width/height/margin resets don't fully override, which is
+     why it kept sitting a few px off from centered no matter how the
+     surrounding label/margins were tuned. A fully custom-drawn box has no
+     such hidden metrics — its rendered size is exactly what's declared. */
+  .editor-content-col :global(.tiptap ul[data-type="taskList"] li > label input[type="checkbox"]) {
+    appearance: none;
+    -webkit-appearance: none;
+    margin: 0;
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+    border: 1.5px solid var(--border);
+    border-radius: 4px;
+    background-color: var(--content-bg);
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 10px 10px;
+    cursor: pointer;
+  }
+  .editor-content-col :global(.tiptap ul[data-type="taskList"] li > label input[type="checkbox"]:checked) {
+    background-color: var(--accent);
+    border-color: var(--accent);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='3 8 6.5 11.5 13 4.5'/%3E%3C/svg%3E");
   }
   .editor-content-col :global(.tiptap ul[data-type="taskList"] li > div) {
     flex: 1;
+  }
+  /* The content div's own <p> still carries the global "p { margin: 0.4em
+     0 }" rule, which — unlike in normal block flow — doesn't collapse away
+     against the flex-item div wrapping it, so it was pushing the text down
+     below the checkbox's centered position instead of the two lining up. */
+  .editor-content-col :global(.tiptap ul[data-type="taskList"] li > div p) {
+    margin: 0;
   }
   .editor-content-col :global(.tiptap ul[data-type="taskList"] li[data-checked="true"] > div) {
     color: var(--text-secondary);
@@ -1488,6 +2095,13 @@
     font-weight: 600;
     text-align: left;
   }
+  /* First column of data rows gets the same header treatment as the first
+     row (th) — together they read as a bold/highlighted row+column frame,
+     like a spreadsheet's row/column headers. */
+  .editor-content-col :global(.tiptap td:first-child) {
+    background: var(--sidebar-bg);
+    font-weight: 600;
+  }
   .editor-content-col :global(.tiptap table p) {
     margin: 0;
   }
@@ -1507,20 +2121,67 @@
   .editor-content-col :global(.tiptap details.toggle-list > :not(summary)) {
     padding-left: 1.2em;
   }
+  /* Was `display:flex` with the icon as one item and the callout's actual
+     content (its real DOM children) implicitly expected to be "the other
+     item" — fine for a single paragraph, but content:"block+" allows more
+     than one, and every one of them became its own flex item in that same
+     row instead of a second one stacking below the first. Pressing Enter
+     inside a callout very much did start a new paragraph (verified
+     directly against the ProseMirror command chain), it just rendered
+     immediately to the right of the first one with the 10px flex `gap` in
+     between — reading as "stayed on the same line, just a small gap"
+     exactly as reported. Position-based icon placement sidesteps this
+     entirely: the real children go back to normal block flow (stacking
+     vertically the way any block+ content does), the icon is pulled out of
+     that flow altogether via absolute positioning instead of being another
+     sibling competing for a row layout meant for exactly one text column. */
   .editor-content-col :global(.tiptap div[data-type="callout"]) {
-    display: flex;
-    gap: 10px;
+    position: relative;
     background: var(--hover-bg);
     border-radius: 6px;
-    padding: 12px 14px;
+    padding: 12px 14px 12px 40px;
     margin: 0.6em 0;
   }
   .editor-content-col :global(.tiptap div[data-type="callout"]::before) {
     content: "\1F4A1";
-    flex-shrink: 0;
+    position: absolute;
+    left: 14px;
+    top: 12px;
   }
   .editor-content-col :global(.tiptap div[data-type="callout"] p) {
     margin: 0;
+  }
+  .editor-content-col :global(.tiptap div[data-type="callout"] p + p) {
+    margin-top: 0.3em;
+  }
+  .editor-content-col :global(.tiptap div[data-type="columns"]) {
+    display: grid;
+    gap: 24px;
+    margin: 0.6em 0;
+  }
+  .editor-content-col :global(.tiptap div[data-type="columns"][data-count="2"]) {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .editor-content-col :global(.tiptap div[data-type="columns"][data-count="3"]) {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .editor-content-col :global(.tiptap div[data-type="columns"][data-count="4"]) {
+    grid-template-columns: repeat(4, 1fr);
+  }
+  .editor-content-col :global(.tiptap div[data-type="columns"][data-count="5"]) {
+    grid-template-columns: repeat(5, 1fr);
+  }
+  .editor-content-col :global(.tiptap div[data-type="column"]) {
+    min-width: 0;
+    border-left: 1px dashed var(--border);
+    padding-left: 12px;
+  }
+  .editor-content-col :global(.tiptap div[data-type="column"]:first-child) {
+    border-left: none;
+    padding-left: 0;
+  }
+  .editor-content-col :global(.tiptap div[data-type="column"] > :first-child) {
+    margin-top: 0;
   }
   .editor-content-col :global(.tiptap a.link-chip) {
     display: inline-flex;
@@ -1610,6 +2271,70 @@
     background: var(--accent);
     border-radius: 2px;
     pointer-events: none;
+  }
+  /* Table row/column gutters: one small grip per row (left of the table) /
+     column (above the table) — drag it to reorder, plain-click to delete.
+     Plus a trailing "+" strip to append a row/column at the end. */
+  .table-gutter-btn {
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: grab;
+    z-index: 40;
+  }
+  .table-gutter-btn:active {
+    cursor: grabbing;
+  }
+  .table-gutter-btn:hover {
+    background: var(--hover-bg-strong);
+    color: var(--text-primary);
+  }
+  .table-gutter-add {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    opacity: 0;
+    z-index: 40;
+  }
+  .table-gutter-add:hover {
+    opacity: 1;
+    background: var(--hover-bg);
+    color: var(--text-primary);
+  }
+  .table-add-row {
+    height: 14px;
+    border-radius: 0 0 4px 4px;
+  }
+  .table-add-col {
+    width: 14px;
+    border-radius: 0 4px 4px 0;
+  }
+  .table-drop-indicator {
+    position: absolute;
+    background: var(--accent);
+    border-radius: 2px;
+    pointer-events: none;
+    z-index: 41;
+  }
+  .table-drop-row {
+    height: 3px;
+    margin-top: -1.5px;
+  }
+  .table-drop-col {
+    width: 3px;
+    margin-left: -1.5px;
   }
   /* One rounded overlay per row that should read as "highlighted" — either
      a whole block covered by a margin drag-select (multiSelectRects) or the

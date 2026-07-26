@@ -14,6 +14,10 @@ export function DeleteEntry(arg1) {
   return window['go']['main']['App']['DeleteEntry'](arg1);
 }
 
+export function EnsureLinkID(arg1) {
+  return window['go']['main']['App']['EnsureLinkID'](arg1);
+}
+
 export function FileExists(arg1) {
   return window['go']['main']['App']['FileExists'](arg1);
 }
@@ -60,6 +64,14 @@ export function ReadFile(arg1) {
 
 export function RenameEntry(arg1, arg2) {
   return window['go']['main']['App']['RenameEntry'](arg1, arg2);
+}
+
+export function ResolveLinkID(arg1) {
+  return window['go']['main']['App']['ResolveLinkID'](arg1);
+}
+
+export function SaveAppSettings(arg1, arg2) {
+  return window['go']['main']['App']['SaveAppSettings'](arg1, arg2);
 }
 
 export function SaveFileDialog(arg1, arg2) {

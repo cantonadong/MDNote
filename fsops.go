@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"io/fs"
@@ -86,6 +87,12 @@ func (a *App) ReadFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Strip a leading UTF-8 BOM (common in files saved by Notepad's "UTF-8"
+	// option and some other Windows editors): left in place, it silently
+	// breaks the markdown parser's "#" heading match on the file's very
+	// first line, since the BOM — not "#" — is then the true first
+	// character.
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
 	return string(data), nil
 }
 
@@ -139,6 +146,7 @@ func (a *App) RenameEntry(path string, newName string) (string, error) {
 	if err := os.Rename(path, newPath); err != nil {
 		return "", err
 	}
+	updateLinkRegistryPath(settings, path, newPath)
 	return newPath, nil
 }
 
@@ -182,6 +190,7 @@ func (a *App) MoveEntry(srcPath string, destDir string) (string, error) {
 	if err := os.Rename(srcPath, newPath); err != nil {
 		return "", err
 	}
+	updateLinkRegistryPath(settings, srcPath, newPath)
 	return newPath, nil
 }
 

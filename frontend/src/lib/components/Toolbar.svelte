@@ -2,6 +2,7 @@
   import Icon from "./Icon.svelte";
   import { appState } from "$lib/appState.svelte";
   import { editorBridge } from "$lib/editor/bridge.svelte";
+  import { t } from "$lib/i18n.svelte";
 
   function undo() {
     editorBridge.instance?.chain().focus().undo().run();
@@ -9,16 +10,19 @@
   function redo() {
     editorBridge.instance?.chain().focus().redo().run();
   }
-  const buttons = [
-    { name: "open", title: "打开", action: () => appState.openViaDialog(), disabled: () => false },
-    { name: "new", title: "新建", action: () => appState.newTab(), disabled: () => false },
-    { name: "save", title: "保存", action: () => appState.saveActiveTab(), disabled: () => false },
-    { name: "save-as", title: "另存为", action: () => appState.saveActiveTabAs(), disabled: () => false },
-    { name: "search", title: "查找", action: () => appState.openFindReplace(false), disabled: () => false },
-    { name: "replace", title: "替换", action: () => appState.openFindReplace(true), disabled: () => false },
-    { name: "undo", title: "撤销", action: undo, disabled: () => !editorBridge.canUndo },
-    { name: "redo", title: "重做", action: redo, disabled: () => !editorBridge.canRedo },
-  ];
+  function exportPdf() {
+    window.print();
+  }
+  let buttons = $derived([
+    { name: "open", title: t("toolbar.open"), action: () => appState.openViaDialog(), disabled: () => false },
+    { name: "new", title: t("toolbar.new"), action: () => appState.newTab(), disabled: () => false },
+    { name: "save", title: t("toolbar.save"), action: () => appState.saveActiveTab(), disabled: () => false },
+    { name: "save-as", title: t("toolbar.saveAs"), action: () => appState.saveActiveTabAs(), disabled: () => false },
+    { name: "search", title: t("toolbar.find"), action: () => appState.openFindReplace(false), disabled: () => false },
+    { name: "replace", title: t("toolbar.replace"), action: () => appState.openFindReplace(true), disabled: () => false },
+    { name: "undo", title: t("toolbar.undo"), action: undo, disabled: () => !editorBridge.canUndo },
+    { name: "redo", title: t("toolbar.redo"), action: redo, disabled: () => !editorBridge.canRedo },
+  ]);
 </script>
 
 <div class="toolbar">
@@ -33,6 +37,9 @@
       <Icon name={btn.name} size={17} />
     </button>
   {/each}
+  <button class="tb-btn tb-export" title={t("toolbar.export")} aria-label={t("toolbar.export")} onclick={exportPdf}>
+    <Icon name="export" size={17} />
+  </button>
 </div>
 
 <style>
@@ -71,5 +78,8 @@
   .tb-btn:disabled:hover {
     background: transparent;
     color: var(--text-secondary);
+  }
+  .tb-export {
+    margin-left: auto;
   }
 </style>

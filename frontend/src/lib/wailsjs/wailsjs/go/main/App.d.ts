@@ -8,6 +8,8 @@ export function CreateEntry(arg1:string,arg2:string,arg3:boolean):Promise<main.F
 
 export function DeleteEntry(arg1:string):Promise<void>;
 
+export function EnsureLinkID(arg1:string):Promise<string>;
+
 export function FileExists(arg1:string):Promise<boolean>;
 
 export function GetInitialFile():Promise<string>;
@@ -31,6 +33,10 @@ export function OpenWithDefaultApp(arg1:string):Promise<void>;
 export function ReadFile(arg1:string):Promise<string>;
 
 export function RenameEntry(arg1:string,arg2:string):Promise<string>;
+
+export function ResolveLinkID(arg1:string):Promise<string>;
+
+export function SaveAppSettings(arg1:string,arg2:boolean):Promise<main.Settings>;
 
 export function SaveFileDialog(arg1:string,arg2:string):Promise<string>;
 

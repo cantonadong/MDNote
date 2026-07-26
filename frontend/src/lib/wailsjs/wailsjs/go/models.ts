@@ -21,6 +21,8 @@ export namespace main {
 	    windowMaximized: boolean;
 	    openTabPaths: string[];
 	    activeTabPath: string;
+	    language: string;
+	    outlineAutoNumber: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -32,6 +34,8 @@ export namespace main {
 	        this.windowMaximized = source["windowMaximized"];
 	        this.openTabPaths = source["openTabPaths"];
 	        this.activeTabPath = source["activeTabPath"];
+	        this.language = source["language"];
+	        this.outlineAutoNumber = source["outlineAutoNumber"];
 	    }
 	}
 

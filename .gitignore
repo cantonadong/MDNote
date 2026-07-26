@@ -12,6 +12,7 @@ vite.config.ts.timestamp-*
 # Go build cache/artifacts
 /build
 /mdnote.exe
+/MDNote.exe
 
 # 便携版运行期配置（首次启动生成，不入库）
 /mdnote.ini

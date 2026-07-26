@@ -5,6 +5,7 @@
   import { appState, stripMdExt } from "$lib/appState.svelte";
   import { api, type FileEntry } from "$lib/api";
   import { startRowDrag } from "$lib/dragController";
+  import { t } from "$lib/i18n.svelte";
 
   let { entry, depth = 0 }: { entry: FileEntry; depth?: number } = $props();
 
@@ -27,7 +28,7 @@
     try {
       children = await api.listDir(entry.path);
     } catch (e) {
-      if (!silent) appState.showToast(`读取目录失败: ${e}`);
+      if (!silent) appState.showToast(`${t("tree.readDirFailed")}: ${e}`);
       children = [];
     }
   }
@@ -76,6 +77,11 @@
     } else {
       appState.openPath(entry.path);
     }
+  }
+
+  function onRowDblClick(e: MouseEvent) {
+    e.stopPropagation();
+    startRename();
   }
 
   function openMenu(e: MouseEvent) {
@@ -163,6 +169,7 @@
     data-tree-dir={entry.isDir}
     onpointerdown={onPointerDown}
     onclick={onRowClick}
+    ondblclick={onRowDblClick}
     oncontextmenu={openMenu}
     role="presentation"
   >
@@ -196,13 +203,13 @@
   {#if entry.isDir && expanded}
     <div class="children">
       {#if children === null}
-        <div class="loading" style={`padding-left:${28 + depth * 16}px`}>加载中…</div>
+        <div class="loading" style={`padding-left:${28 + depth * 16}px`}>{t("sidebar.loading")}</div>
       {:else}
         {#if appState.pendingNewEntry?.parentDir === entry.path}
           <NewEntryRow depth={depth + 1} isDir={appState.pendingNewEntry.isDir} />
         {/if}
         {#if children.length === 0 && !appState.pendingNewEntry}
-          <div class="loading" style={`padding-left:${28 + depth * 16}px`}>空文件夹</div>
+          <div class="loading" style={`padding-left:${28 + depth * 16}px`}>{t("tree.emptyFolder")}</div>
         {:else}
           {#each children as child (child.path)}
             <TreeNode entry={child} depth={depth + 1} />
@@ -216,12 +223,12 @@
 {#if menuOpen}
   <div class="context-menu" style={`left:${menuPos.x}px; top:${menuPos.y}px`}>
     {#if entry.isDir}
-      <button onclick={newFile}><Icon name="file-plus" size={14} /> 新建文件</button>
-      <button onclick={newFolder}><Icon name="folder-plus" size={14} /> 新建文件夹</button>
+      <button onclick={newFile}><Icon name="file-plus" size={14} /> {t("tree.newFile")}</button>
+      <button onclick={newFolder}><Icon name="folder-plus" size={14} /> {t("tree.newFolder")}</button>
       <div class="menu-sep"></div>
     {/if}
-    <button onclick={startRename}><Icon name="rename" size={14} /> 重命名</button>
-    <button class="danger" onclick={doDelete}><Icon name="trash" size={14} /> 删除</button>
+    <button onclick={startRename}><Icon name="rename" size={14} /> {t("tree.rename")}</button>
+    <button class="danger" onclick={doDelete}><Icon name="trash" size={14} /> {t("tree.delete")}</button>
   </div>
 {/if}
 

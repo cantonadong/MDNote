@@ -1,23 +1,48 @@
 <script lang="ts">
   import { appState } from "$lib/appState.svelte";
+  import { t } from "$lib/i18n.svelte";
+
+  // Capture phase + stopPropagation: without it, Enter would also reach the
+  // editor's own contenteditable underneath (which still holds keyboard
+  // focus while this overlay is just a visually-on-top div) and insert a
+  // newline there invisibly behind the dialog, in addition to resolving it.
+  function onKeydownCapture(e: KeyboardEvent) {
+    if (e.key !== "Enter") return;
+    if (appState.pendingClose) {
+      e.preventDefault();
+      e.stopPropagation();
+      // "优先保存": Enter always resolves to the save/save-as action, never
+      // discard — discarding on a stray Enter would be destructive.
+      appState.resolvePendingClose("save");
+    } else if (appState.pendingDelete) {
+      e.preventDefault();
+      e.stopPropagation();
+      // "删除高于取消": Enter confirms the delete.
+      appState.resolvePendingDelete(true);
+    }
+  }
 </script>
+
+<svelte:window onkeydowncapture={onKeydownCapture} />
 
 {#if appState.pendingClose}
   <div class="overlay">
     <div class="dialog">
       {#if appState.pendingClose.missing}
-        <p>该文件在其他地方已被删除，是否另存为新文件？</p>
+        <p>{t("confirm.missingTitle")}</p>
         <div class="actions">
-          <button onclick={() => appState.resolvePendingClose("cancel")}>取消</button>
-          <button class="danger" onclick={() => appState.resolvePendingClose("discard")}>直接关闭</button>
-          <button class="primary" onclick={() => appState.resolvePendingClose("save")}>另存为</button>
+          <button onclick={() => appState.resolvePendingClose("cancel")}>{t("confirm.cancel")}</button>
+          <button class="danger" onclick={() => appState.resolvePendingClose("discard")}
+            >{t("confirm.discardAndClose")}</button
+          >
+          <button class="primary" onclick={() => appState.resolvePendingClose("save")}>{t("confirm.saveAs")}</button>
         </div>
       {:else}
-        <p>文件尚未保存，是否保存更改？</p>
+        <p>{t("confirm.unsavedTitle")}</p>
         <div class="actions">
-          <button onclick={() => appState.resolvePendingClose("cancel")}>取消</button>
-          <button class="danger" onclick={() => appState.resolvePendingClose("discard")}>舍弃</button>
-          <button class="primary" onclick={() => appState.resolvePendingClose("save")}>保存</button>
+          <button onclick={() => appState.resolvePendingClose("cancel")}>{t("confirm.cancel")}</button>
+          <button class="danger" onclick={() => appState.resolvePendingClose("discard")}>{t("confirm.discard")}</button>
+          <button class="primary" onclick={() => appState.resolvePendingClose("save")}>{t("confirm.save")}</button>
         </div>
       {/if}
     </div>
@@ -28,12 +53,14 @@
   <div class="overlay">
     <div class="dialog">
       <p>
-        确定要删除{appState.pendingDelete.isDir ? "文件夹" : "文件"} “{appState.pendingDelete.name}”
-        吗？此操作不可撤销。
+        {t("confirm.deleteTitle", {
+          type: appState.pendingDelete.isDir ? t("confirm.deleteFolder") : t("confirm.deleteFile"),
+          name: appState.pendingDelete.name,
+        })}
       </p>
       <div class="actions">
-        <button onclick={() => appState.resolvePendingDelete(false)}>取消</button>
-        <button class="danger" onclick={() => appState.resolvePendingDelete(true)}>删除</button>
+        <button onclick={() => appState.resolvePendingDelete(false)}>{t("confirm.cancel")}</button>
+        <button class="danger" onclick={() => appState.resolvePendingDelete(true)}>{t("confirm.deleteConfirm")}</button>
       </div>
     </div>
   </div>

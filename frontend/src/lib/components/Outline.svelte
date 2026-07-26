@@ -1,16 +1,22 @@
 <script lang="ts">
   import { appState } from "$lib/appState.svelte";
   import { editorBridge } from "$lib/editor/bridge.svelte";
+  import { numberOutline } from "$lib/editor/outline";
+  import { t } from "$lib/i18n.svelte";
 
   function jump(pos: number) {
     editorBridge.scrollToPos?.(pos);
   }
+
+  let numbers = $derived(
+    appState.settings.outlineAutoNumber ? numberOutline(appState.outlineItems) : null,
+  );
 </script>
 
 <aside class="outline">
-  <div class="outline-title">大纲</div>
+  <div class="outline-title">{t("outline.title")}</div>
   {#if appState.outlineItems.length === 0}
-    <div class="empty">暂无标题</div>
+    <div class="empty">{t("outline.empty")}</div>
   {:else}
     <ul>
       {#each appState.outlineItems as item, i (i)}
@@ -20,7 +26,7 @@
             title={item.text || "(空标题)"}
             onclick={() => jump(item.pos)}
           >
-            {item.text || "(空标题)"}
+            {#if numbers}<span class="outline-number">{numbers[i]}</span>{/if}{item.text || "(空标题)"}
           </button>
         </li>
       {/each}
@@ -72,5 +78,9 @@
   }
   li button:hover {
     background: var(--hover-bg);
+  }
+  .outline-number {
+    color: var(--text-secondary);
+    margin-right: 5px;
   }
 </style>

@@ -30,6 +30,14 @@ type Settings struct {
 	// there's nothing on disk to reopen them from.
 	OpenTabPaths  []string `json:"openTabPaths"`
 	ActiveTabPath string   `json:"activeTabPath"`
+	// Language is "zh" / "en" / "system" (follow the OS locale, resolved on
+	// the frontend since that's where the OS locale is actually readable via
+	// navigator.language — this field just remembers the user's choice).
+	// Empty/unset defaults to "system".
+	Language string `json:"language"`
+	// OutlineAutoNumber toggles sibling sequence numbers (1./2./3.) on
+	// same-level headings in the right-hand outline panel. Default off.
+	OutlineAutoNumber bool `json:"outlineAutoNumber"`
 }
 
 func settingsPath() (string, error) {
@@ -76,6 +84,10 @@ func loadSettings() (Settings, error) {
 			if v := strings.TrimSpace(value); v != "" {
 				s.OpenTabPaths = append(s.OpenTabPaths, v)
 			}
+		case "Language":
+			s.Language = strings.TrimSpace(value)
+		case "OutlineAutoNumber":
+			s.OutlineAutoNumber = strings.TrimSpace(value) == "true"
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -97,5 +109,9 @@ func saveSettings(s Settings) error {
 	for _, p := range s.OpenTabPaths {
 		fmt.Fprintf(&b, "Tab=%s\n", p)
 	}
+	if s.Language != "" {
+		fmt.Fprintf(&b, "Language=%s\n", s.Language)
+	}
+	fmt.Fprintf(&b, "OutlineAutoNumber=%t\n", s.OutlineAutoNumber)
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }

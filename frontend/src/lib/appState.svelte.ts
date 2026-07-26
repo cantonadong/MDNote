@@ -1,5 +1,7 @@
 import { api, type Settings } from "./api";
 import type { OutlineItem } from "./editor/outline";
+import { editorBridge } from "./editor/bridge.svelte";
+import { i18n, t, type LanguageSetting } from "./i18n.svelte";
 
 export interface Tab {
   id: string;
@@ -23,6 +25,9 @@ export interface SelectedEntry {
 export interface LinkPick {
   path: string;
   title: string;
+  // Stable id for page/file link chips (see linkids.go) — unset for a plain
+  // web link, which has no on-disk target to track.
+  id?: string;
 }
 
 export function stripMdExt(name: string): string {
@@ -66,7 +71,22 @@ function isDirty(tab: Tab): boolean {
 }
 
 class AppState {
-  settings = $state<Settings>({ rootDir: "", windowMaximized: false, openTabPaths: [], activeTabPath: "" });
+  settings = $state<Settings>({
+    rootDir: "",
+    windowMaximized: false,
+    openTabPaths: [],
+    activeTabPath: "",
+    language: "system",
+    outlineAutoNumber: false,
+  });
+  // The settings page renders as its own pseudo-tab in the tab bar rather
+  // than a file — settingsOpen is whether that tab exists at all,
+  // settingsActive is whether it's the currently-focused one (vs a real
+  // file tab in `tabs`). Kept separate from the Tab/tabs model entirely
+  // since Tab's fields (path/content/savedContent/...) are all file-
+  // specific and don't mean anything for a settings view.
+  settingsOpen = $state(false);
+  settingsActive = $state(false);
   tabs = $state<Tab[]>([]);
   activeTabId = $state<string | null>(null);
   pendingClose = $state<PendingClose | null>(null);
@@ -107,6 +127,7 @@ class AppState {
 
   async init() {
     this.settings = await api.getSettings();
+    i18n.setLanguage((this.settings.language as LanguageSetting) || "system");
     const initialFile = await api.getInitialFile();
 
     // Restore whatever was open last session — silently skipping any file
@@ -179,7 +200,7 @@ class AppState {
       this.refreshTree();
       this.persistOpenTabs();
     } catch (e) {
-      this.showToast(`迁移失败: ${e}`);
+      this.showToast(`${t("toast.migrateFailed")}: ${e}`);
     }
   }
 
@@ -269,7 +290,7 @@ class AppState {
       if (staleTabId) this.closeTabImmediately(staleTabId);
       this.persistOpenTabs();
     } catch (e) {
-      if (!opts.silent) this.showToast(`打开失败: ${e}`);
+      if (!opts.silent) this.showToast(`${t("toast.openFailed")}: ${e}`);
     }
   }
 
@@ -278,7 +299,7 @@ class AppState {
       const path = await api.openFileDialog(this.targetDirForNewEntry());
       if (path) await this.openPath(path);
     } catch (e) {
-      this.showToast(`打开失败: ${e}`);
+      this.showToast(`${t("toast.openFailed")}: ${e}`);
     }
   }
 
@@ -307,7 +328,7 @@ class AppState {
       tab.savedContent = tab.content;
       return true;
     } catch (e) {
-      this.showToast(`保存失败: ${e}`);
+      this.showToast(`${t("toast.saveFailed")}: ${e}`);
       return false;
     }
   }
@@ -324,7 +345,7 @@ class AppState {
       this.refreshTree();
       return true;
     } catch (e) {
-      this.showToast(`另存失败: ${e}`);
+      this.showToast(`${t("toast.saveAsFailed")}: ${e}`);
       return false;
     }
   }
@@ -356,7 +377,14 @@ class AppState {
     const toIdx = this.tabs.findIndex((t) => t.id === toId);
     if (fromIdx === -1 || toIdx === -1) return;
     const [moved] = this.tabs.splice(fromIdx, 1);
-    this.tabs.splice(toIdx, 0, moved);
+    // Dropping onto a tab always means "land just before it" (matches the
+    // left-edge insertion line the drag-over highlight draws). Removing the
+    // source first shifts every later index down by one — so when the
+    // target was to the right of the source, its own index shifted too and
+    // has to be corrected, or the moved tab lands one slot past the target
+    // (after it, not before) instead of where the indicator pointed.
+    const insertIdx = fromIdx < toIdx ? toIdx - 1 : toIdx;
+    this.tabs.splice(insertIdx, 0, moved);
   }
 
   // Dropping past the last tab (empty space to the right of it, with no
@@ -396,47 +424,84 @@ class AppState {
     this.closeTabImmediately(pending.tabId);
   }
 
-  // -- Slash-menu / block-handle async helpers (page link / file link / new page) --
-
-  async pickPageLink(): Promise<LinkPick | null> {
-    try {
-      const path = await api.openFileDialog(this.targetDirForNewEntry());
-      if (!path) return null;
-      const name = await api.basename(path);
-      return { path, title: stripMdExt(name) };
-    } catch (e) {
-      this.showToast(`选择文件失败: ${e}`);
-      return null;
-    }
-  }
+  // -- Slash-menu / block-handle async helpers (file link / new page) --
 
   async pickFileLink(): Promise<LinkPick | null> {
     try {
       const path = await api.openAnyFileDialog();
       if (!path) return null;
       const name = await api.basename(path);
-      return { path, title: name };
+      const id = await api.ensureLinkID(path).catch(() => undefined);
+      return { path, title: name, id };
     } catch (e) {
-      this.showToast(`选择文件失败: ${e}`);
+      this.showToast(`${t("toast.pickFailed")}: ${e}`);
       return null;
     }
   }
 
+  // Resolved by WebLinkDialog.svelte, which renders whenever this is set —
+  // see pickWebLink/resolveWebLink/cancelWebLink. initialUrl/initialText are
+  // non-empty when this is editing an existing link (right-click on one)
+  // rather than inserting a new one.
+  pendingWebLink = $state<{
+    resolve: (v: LinkPick | null) => void;
+    initialUrl: string;
+    initialText: string;
+  } | null>(null);
+
+  pickWebLink(initial?: { url: string; text: string }): Promise<LinkPick | null> {
+    return new Promise((resolve) => {
+      this.pendingWebLink = { resolve, initialUrl: initial?.url ?? "", initialText: initial?.text ?? "" };
+    });
+  }
+
+  resolveWebLink(url: string, text: string) {
+    const pending = this.pendingWebLink;
+    this.pendingWebLink = null;
+    if (!pending) return;
+    const trimmed = url.trim();
+    if (!trimmed) {
+      pending.resolve(null);
+      return;
+    }
+    const normalized = /^[a-z][a-z0-9+.-]*:/i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    pending.resolve({ path: normalized, title: text.trim() || normalized });
+  }
+
+  cancelWebLink() {
+    const pending = this.pendingWebLink;
+    this.pendingWebLink = null;
+    pending?.resolve(null);
+  }
+
   async createNewPageNear(nearPath: string | null): Promise<LinkPick | null> {
     if (!this.settings.rootDir) {
-      this.showToast("请先选择根目录");
+      this.showToast(t("toast.selectRootFirst"));
       return null;
     }
     const dir = nearPath ? parentDir(nearPath) : this.targetDirForNewEntry();
-    const name = window.prompt("新建 page 名称（含 .md 后缀）：", "未命名.md");
-    if (!name) return null;
+    // No naming prompt: auto-picks "未命名.md", or "未命名 N.md" the first
+    // free N if that's already taken. Doesn't open it — the caller inserts a
+    // pageLink chip pointing at it in the *current* document; opening the
+    // new (still-empty) file would yank focus away from what the user was
+    // actually doing. They can click the chip when they're ready to edit it.
     try {
-      const entry = await api.createEntry(dir, name, false);
+      let entry = null;
+      for (let n = 1; n <= 999; n++) {
+        const name = n === 1 ? "未命名.md" : `未命名 ${n}.md`;
+        try {
+          entry = await api.createEntry(dir, name, false);
+          break;
+        } catch (e) {
+          if (n === 999) throw e;
+        }
+      }
+      if (!entry) return null;
       this.refreshTree();
-      await this.openPath(entry.path);
-      return { path: entry.path, title: stripMdExt(entry.name) };
+      const id = await api.ensureLinkID(entry.path).catch(() => undefined);
+      return { path: entry.path, title: stripMdExt(entry.name), id };
     } catch (e) {
-      this.showToast(`新建 page 失败: ${e}`);
+      this.showToast(`${t("toast.newPageFailed")}: ${e}`);
       return null;
     }
   }
@@ -446,7 +511,7 @@ class AppState {
       await api.createEntry(parentDir, name, isDir);
       this.refreshTree();
     } catch (e) {
-      this.showToast(`新建失败: ${e}`);
+      this.showToast(`${t("toast.createFailed")}: ${e}`);
     }
   }
 
@@ -471,6 +536,68 @@ class AppState {
     await this.createEntry(pending.parentDir, name, pending.isDir);
   }
 
+  // Page-link/file-link chips store a `path` attr (see links.ts — the
+  // displayed label is derived from it, not stored separately), which goes
+  // stale/broken the moment the target gets renamed or moved unless
+  // something rewrites every chip that pointed at the old path. Called
+  // after a successful rename/move with the old/new path pair; also
+  // correctly handles a *folder* rename/move cascading to every descendant
+  // file's chips, since `oldPath + "\\"` as a prefix match covers that case
+  // the same way the existing tab-path-rewrite loops above it already do.
+  private syncLinkReferences(oldPath: string, newPath: string) {
+    const matches = (p: string) => p === oldPath || p.startsWith(oldPath + "\\");
+    const remap = (p: string) => (p === oldPath ? newPath : newPath + p.slice(oldPath.length));
+    for (const t of this.tabs) {
+      if (t.id === this.activeTabId && editorBridge.instance) {
+        // Live document — rewrite via a transaction so the visible chip(s)
+        // update immediately; tab.content resyncs shortly after through the
+        // editor's normal onUpdate → scheduleSync path.
+        const editor = editorBridge.instance;
+        let tr = editor.state.tr;
+        let changed = false;
+        editor.state.doc.descendants((node, pos) => {
+          if (
+            (node.type.name === "pageLink" || node.type.name === "fileLink") &&
+            typeof node.attrs.path === "string" &&
+            matches(node.attrs.path)
+          ) {
+            tr = tr.setNodeAttribute(pos, "path", remap(node.attrs.path));
+            changed = true;
+          }
+        });
+        if (changed) editor.view.dispatch(tr);
+        continue;
+      }
+      // Inactive tab: only its markdown string is in memory. The chip
+      // round-trips as a quoted `data-path="..."` HTML attribute (see
+      // links.ts), so anchoring the replacement to that exact quoted form
+      // (rather than a bare oldPath substring anywhere in the text) avoids
+      // false hits on some unrelated path that merely shares oldPath as a
+      // text prefix.
+      if (!t.content.includes(oldPath)) continue;
+      let updated = t.content
+        .split(`data-path="${oldPath}"`)
+        .join(`data-path="${newPath}"`);
+      updated = updated.split(`data-path="${oldPath}\\`).join(`data-path="${newPath}\\`);
+      if (updated === t.content) continue;
+      t.content = updated;
+      // Not an edit the user made — write it straight through rather than
+      // leaving the tab looking dirty for a change they didn't type.
+      if (t.path) {
+        api
+          .writeFile(t.path, updated)
+          .then(() => {
+            t.savedContent = updated;
+          })
+          .catch(() => {
+            /* best effort — in-memory content is still corrected either way */
+          });
+      } else {
+        t.savedContent = updated;
+      }
+    }
+  }
+
   async renameEntry(path: string, newName: string) {
     try {
       const newPath = await api.renameEntry(path, newName);
@@ -485,10 +612,11 @@ class AppState {
       if (this.selectedEntry?.path === path) {
         this.selectedEntry = { ...this.selectedEntry, path: newPath };
       }
+      this.syncLinkReferences(path, newPath);
       this.refreshTree();
       this.persistOpenTabs();
     } catch (e) {
-      this.showToast(`重命名失败: ${e}`);
+      this.showToast(`${t("toast.renameFailed")}: ${e}`);
     }
   }
 
@@ -505,10 +633,17 @@ class AppState {
       if (this.selectedEntry?.path === srcPath) {
         this.selectedEntry = { ...this.selectedEntry, path: newPath };
       }
+      this.syncLinkReferences(srcPath, newPath);
       this.refreshTree();
       this.persistOpenTabs();
     } catch (e) {
-      this.showToast(`移动失败: ${e}`);
+      // Backend rejects a drop that resolves to the item's current directory
+      // with this exact message — a benign no-op (the drag guard in
+      // dragController.ts filters most of these client-side already, but
+      // path-normalization edge cases can still slip one through), not a
+      // failure worth alarming the user about.
+      if (String(e).includes("already in target directory")) return;
+      this.showToast(`${t("toast.moveFailed")}: ${e}`);
     }
   }
 
@@ -535,7 +670,38 @@ class AppState {
       }
       this.refreshTree();
     } catch (e) {
-      this.showToast(`删除失败: ${e}`);
+      this.showToast(`${t("toast.deleteFailed")}: ${e}`);
+    }
+  }
+
+  // -- Settings pseudo-tab --
+
+  openSettings() {
+    this.settingsOpen = true;
+    this.settingsActive = true;
+  }
+
+  closeSettings() {
+    this.settingsOpen = false;
+    this.settingsActive = false;
+  }
+
+  // Switching to a real file tab while the settings tab exists just
+  // defocuses it (leaves it open in the tab bar) rather than closing it —
+  // same "still there, just not looking at it" behavior as any other
+  // inactive tab.
+  activateTab(tabId: string) {
+    this.activeTabId = tabId;
+    this.settingsActive = false;
+    this.persistOpenTabs();
+  }
+
+  async saveAppSettings(language: LanguageSetting, outlineAutoNumber: boolean) {
+    try {
+      this.settings = await api.saveAppSettings(language, outlineAutoNumber);
+      i18n.setLanguage(language);
+    } catch (e) {
+      this.showToast(`${t("toast.saveSettingsFailed")}: ${e}`);
     }
   }
 }

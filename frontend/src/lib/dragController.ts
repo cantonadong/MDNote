@@ -12,6 +12,17 @@ const DIR_ATTR = "data-tree-dir";
 const ROOT_ATTR = "data-tree-root";
 const START_THRESHOLD = 4;
 
+// Windows paths are case-insensitive and the root-drop target (built from
+// settings.rootDir by simple string concatenation) can carry a trailing
+// separator that a sibling-row path (returned pre-cleaned by the Go backend
+// via filepath.Join) never does — either difference alone is enough for a
+// same-directory drop to slip past the "already there" guard below as a
+// plain string mismatch and reach MoveEntry, which then rejects it with an
+// "already in target directory" error the user sees as a spurious toast.
+function normPath(p: string): string {
+  return p.replace(/[\\/]+$/, "").toLowerCase();
+}
+
 interface HitTarget {
   path: string;
   isDir: boolean;
@@ -99,7 +110,7 @@ export function startRowDrag(path: string, isDir: boolean, label: string, startE
     appState.dragGhost = null;
     if (!wasDragging || !target || target.path === path) return;
     const destDir = target.position === "inside" ? target.path : parentDir(target.path);
-    if (!destDir || destDir === parentDir(path)) return;
+    if (!destDir || normPath(destDir) === normPath(parentDir(path))) return;
     await appState.moveEntry(path, destDir);
     if (target.position === "inside") appState.pendingExpandPath = destDir;
   }

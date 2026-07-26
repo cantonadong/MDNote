@@ -4,10 +4,12 @@
   import Tabs from "$lib/components/Tabs.svelte";
   import Toolbar from "$lib/components/Toolbar.svelte";
   import Editor from "$lib/components/Editor.svelte";
+  import SettingsPanel from "$lib/components/SettingsPanel.svelte";
   import Outline from "$lib/components/Outline.svelte";
   import StatusBar from "$lib/components/StatusBar.svelte";
   import FindReplace from "$lib/components/FindReplace.svelte";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
+  import WebLinkDialog from "$lib/components/WebLinkDialog.svelte";
   import Toast from "$lib/components/Toast.svelte";
   import Icon from "$lib/components/Icon.svelte";
   import { appState } from "$lib/appState.svelte";
@@ -52,14 +54,21 @@
   <Sidebar />
   <div class="main-col">
     <Tabs />
-    <Toolbar />
-    <FindReplace />
-    <Editor />
-    <StatusBar />
+    {#if appState.settingsActive}
+      <SettingsPanel />
+    {:else}
+      <Toolbar />
+      <FindReplace />
+      <Editor />
+      <StatusBar />
+    {/if}
   </div>
-  <Outline />
+  {#if !appState.settingsActive}
+    <Outline />
+  {/if}
 </div>
 <ConfirmDialog />
+<WebLinkDialog />
 <Toast />
 {#if appState.dragGhost}
   <div class="drag-ghost" style={`left:${appState.dragGhost.x}px; top:${appState.dragGhost.y}px`}>

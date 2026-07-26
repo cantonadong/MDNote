@@ -13,6 +13,8 @@ export interface Settings {
   windowMaximized: boolean;
   openTabPaths: string[] | null;
   activeTabPath: string;
+  language: string;
+  outlineAutoNumber: boolean;
 }
 
 function goApp(): any {
@@ -59,4 +61,12 @@ export const api = {
   renameEntry: (path: string, newName: string): Promise<string> => goApp().RenameEntry(path, newName),
   deleteEntry: (path: string): Promise<void> => goApp().DeleteEntry(path),
   moveEntry: (srcPath: string, destDir: string): Promise<string> => goApp().MoveEntry(srcPath, destDir),
+  // Stable id -> path resolution for page/file link chips — see linkids.go.
+  // Lets a link keep working after its target is renamed/moved even if the
+  // file holding the link wasn't open at the time (nothing was open to
+  // patch its stored path, but the id never changes).
+  ensureLinkID: (path: string): Promise<string> => goApp().EnsureLinkID(path),
+  resolveLinkID: (id: string): Promise<string> => goApp().ResolveLinkID(id),
+  saveAppSettings: (language: string, outlineAutoNumber: boolean): Promise<Settings> =>
+    goApp().SaveAppSettings(language, outlineAutoNumber),
 };

@@ -3,6 +3,7 @@
   import { appState } from "$lib/appState.svelte";
   import { editorBridge } from "$lib/editor/bridge.svelte";
   import { searchPluginKey, findMatches } from "$lib/editor/searchHighlight";
+  import { t } from "$lib/i18n.svelte";
 
   let query = $state("");
   let replacement = $state("");
@@ -116,12 +117,14 @@
 
 {#if appState.findReplaceOpen}
   <div class="find-replace">
-    <button class="close-btn" title="关闭" aria-label="关闭" onclick={close}><Icon name="close" size={16} /></button>
+    <button class="close-btn" title={t("findreplace.close")} aria-label={t("findreplace.close")} onclick={close}
+      ><Icon name="close" size={16} /></button
+    >
     <div class="rows">
       <div class="row">
         <Icon name="search" size={14} />
         <input
-          placeholder="查找"
+          placeholder={t("findreplace.findPlaceholder")}
           bind:value={query}
           bind:this={queryInputEl}
           oninput={onQueryInput}
@@ -129,14 +132,18 @@
         />
         <span class="count">{matchCount > 0 ? `${activeIndex + 1}/${matchCount}` : "0/0"}</span>
         <div class="nav-group">
-          <button title="上一个" aria-label="上一个" onclick={prev}><Icon name="chevron-up" size={14} /></button>
-          <button title="下一个" aria-label="下一个" onclick={next}><Icon name="chevron-down" size={14} /></button>
+          <button title={t("findreplace.prev")} aria-label={t("findreplace.prev")} onclick={prev}
+            ><Icon name="chevron-up" size={14} /></button
+          >
+          <button title={t("findreplace.next")} aria-label={t("findreplace.next")} onclick={next}
+            ><Icon name="chevron-down" size={14} /></button
+          >
         </div>
       </div>
       <div class="row">
         <Icon name="replace" size={14} />
         <input
-          placeholder="替换为"
+          placeholder={t("findreplace.replacePlaceholder")}
           bind:value={replacement}
           bind:this={replacementInputEl}
           onkeydown={(e) => {
@@ -144,8 +151,8 @@
           }}
         />
         <div class="nav-group">
-          <button class="text-btn primary" onclick={replaceOne}>替换</button>
-          <button class="text-btn primary" onclick={replaceAll}>全部替换</button>
+          <button class="text-btn primary" onclick={replaceOne}>{t("findreplace.replace")}</button>
+          <button class="text-btn primary" onclick={replaceAll}>{t("findreplace.replaceAll")}</button>
         </div>
       </div>
     </div>

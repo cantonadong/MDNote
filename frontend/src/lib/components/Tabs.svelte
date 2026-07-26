@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import Icon from "./Icon.svelte";
   import { appState, stripMdExt, type Tab } from "$lib/appState.svelte";
+  import { t } from "$lib/i18n.svelte";
 
   let scrollEl: HTMLDivElement;
   let draggingId: string | null = $state(null);
@@ -13,8 +14,7 @@
   let renameInputEl: HTMLInputElement = $state()!;
 
   function select(tab: Tab) {
-    appState.activeTabId = tab.id;
-    appState.persistOpenTabs();
+    appState.activateTab(tab.id);
     void appState.checkMissing(tab);
   }
 
@@ -27,6 +27,13 @@
     if (e.button === 1) {
       e.preventDefault();
       appState.requestCloseTab(tab.id);
+    }
+  }
+
+  function onSettingsMouseDown(e: MouseEvent) {
+    if (e.button === 1) {
+      e.preventDefault();
+      appState.closeSettings();
     }
   }
 
@@ -153,7 +160,7 @@
             <span class="tab-title" ondblclick={(e) => startRename(e, tab)} role="presentation">{stripMdExt(tab.title)}</span>
           {/if}
           {#if tab.missing}
-            <span class="missing-dot" title="文件已被删除" aria-hidden="true"></span>
+            <span class="missing-dot" title={t("tabs.missingFile")} aria-hidden="true"></span>
           {:else if appState.isDirty(tab)}
             <span class="dirty-dot" aria-hidden="true"></span>
           {/if}
@@ -163,6 +170,29 @@
         </span>
       </div>
     {/each}
+    {#if appState.settingsOpen}
+      <div
+        class="tab settings-tab"
+        class:active={appState.settingsActive}
+        onclick={() => (appState.settingsActive = true)}
+        onmousedown={onSettingsMouseDown}
+        role="presentation"
+      >
+        <div class="tab-title-wrap">
+          <span class="tab-title">{t("settings.tabTitle")}</span>
+        </div>
+        <span
+          class="tab-close"
+          onclick={(e) => {
+            e.stopPropagation();
+            appState.closeSettings();
+          }}
+          role="presentation"
+        >
+          <Icon name="close" size={13} />
+        </span>
+      </div>
+    {/if}
     <div
       class="tabs-end-spacer"
       class:drag-over={dragOverEnd}
@@ -171,7 +201,7 @@
       role="presentation"
     ></div>
   </div>
-  <button class="new-tab-btn" title="新建标签" aria-label="新建标签" onclick={() => appState.newTab()}>
+  <button class="new-tab-btn" title={t("tabs.newTab")} aria-label={t("tabs.newTab")} onclick={() => appState.newTab()}>
     <Icon name="plus" size={15} />
   </button>
 </div>

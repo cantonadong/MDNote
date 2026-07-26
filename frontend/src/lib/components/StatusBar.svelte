@@ -1,11 +1,12 @@
 <script lang="ts">
   import { appState } from "$lib/appState.svelte";
   import { editorBridge } from "$lib/editor/bridge.svelte";
+  import { t } from "$lib/i18n.svelte";
 </script>
 
 <div class="status-bar">
-  <span>{appState.wordCount} 字</span>
-  <button class="zoom" title="重置为 100%" onclick={() => editorBridge.resetZoom?.()}>
+  <span>{appState.wordCount} {t("statusbar.words")}</span>
+  <button class="zoom" title={t("statusbar.zoom.reset")} onclick={() => editorBridge.resetZoom?.()}>
     {editorBridge.zoom}%
   </button>
 </div>

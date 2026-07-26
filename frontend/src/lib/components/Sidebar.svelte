@@ -4,6 +4,7 @@
   import NewEntryRow from "./NewEntryRow.svelte";
   import { appState } from "$lib/appState.svelte";
   import { api, type FileEntry } from "$lib/api";
+  import { t } from "$lib/i18n.svelte";
 
   let rootChildren = $state<FileEntry[] | null>(null);
 
@@ -15,7 +16,7 @@
     try {
       rootChildren = await api.listDir(appState.effectiveRootDir);
     } catch (e) {
-      appState.showToast(`读取根目录失败: ${e}`);
+      appState.showToast(`${t("toast.readRootFailed")}: ${e}`);
       rootChildren = [];
     }
   }
@@ -61,17 +62,23 @@
     <span class="brand">MDNote</span>
     {#if appState.settings.rootDir}
       <div class="header-actions">
-        <button title="新建文件" aria-label="新建文件" onclick={newFile}><Icon name="file-plus" size={14} /></button>
-        <button title="新建文件夹" aria-label="新建文件夹" onclick={newFolder}><Icon name="folder-plus" size={14} /></button>
-        <button title="刷新" aria-label="刷新" onclick={() => appState.refreshTree()}><Icon name="refresh" size={14} /></button>
+        <button title={t("sidebar.newFile")} aria-label={t("sidebar.newFile")} onclick={newFile}
+          ><Icon name="file-plus" size={14} /></button
+        >
+        <button title={t("sidebar.newFolder")} aria-label={t("sidebar.newFolder")} onclick={newFolder}
+          ><Icon name="folder-plus" size={14} /></button
+        >
+        <button title={t("sidebar.refresh")} aria-label={t("sidebar.refresh")} onclick={() => appState.refreshTree()}
+          ><Icon name="refresh" size={14} /></button
+        >
       </div>
     {/if}
   </div>
 
   {#if !appState.settings.rootDir}
     <div class="empty-state">
-      <p>还没有选择笔记目录</p>
-      <button class="primary-btn" onclick={() => appState.selectRootDir()}>选择根目录</button>
+      <p>{t("sidebar.emptyRoot")}</p>
+      <button class="primary-btn" onclick={() => appState.selectRootDir()}>{t("sidebar.selectRoot")}</button>
     </div>
   {:else}
     <div class="tree" data-tree-root="true" role="presentation">
@@ -84,21 +91,21 @@
       >
         <span class="row-icon"><Icon name="folder" size={14} /></span>
         <span class="root-label">{rootDirName}</span>
-        <button class="root-change-btn" title="迁移到其他位置" aria-label="迁移到其他位置" onclick={migrateRootDir}>
+        <button class="root-change-btn" title={t("sidebar.migrate")} aria-label={t("sidebar.migrate")} onclick={migrateRootDir}>
           <Icon name="move" size={12} />
         </button>
-        <button class="root-change-btn" title="更换根目录" aria-label="更换根目录" onclick={changeRootDir}>
+        <button class="root-change-btn" title={t("sidebar.changeRoot")} aria-label={t("sidebar.changeRoot")} onclick={changeRootDir}>
           <Icon name="refresh" size={12} />
         </button>
       </div>
       {#if rootChildren === null}
-        <div class="loading" style="padding-left:28px">加载中…</div>
+        <div class="loading" style="padding-left:28px">{t("sidebar.loading")}</div>
       {:else}
         {#if appState.pendingNewEntry?.parentDir === appState.effectiveRootDir}
           <NewEntryRow depth={1} isDir={appState.pendingNewEntry.isDir} />
         {/if}
         {#if rootChildren.length === 0 && !appState.pendingNewEntry}
-          <div class="loading" style="padding-left:28px">空文件夹，右键或使用上方按钮新建</div>
+          <div class="loading" style="padding-left:28px">{t("sidebar.emptyFolder")}</div>
         {:else}
           {#each rootChildren as child (child.path)}
             <TreeNode entry={child} depth={1} />
@@ -111,6 +118,19 @@
       ></div>
     </div>
   {/if}
+
+  <div class="sidebar-footer">
+    <button
+      class="footer-btn"
+      class:active={appState.settingsActive}
+      title={t("sidebar.settings")}
+      aria-label={t("sidebar.settings")}
+      onclick={() => appState.openSettings()}
+    >
+      <Icon name="settings" size={15} />
+      <span>{t("sidebar.settings")}</span>
+    </button>
+  </div>
 </aside>
 
 <style>
@@ -259,6 +279,32 @@
   }
   .root-change-btn:hover {
     background: var(--hover-bg-strong);
+    color: var(--text-primary);
+  }
+  .sidebar-footer {
+    flex-shrink: 0;
+    padding: 6px 8px;
+    border-top: 1px solid var(--border);
+  }
+  .footer-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: 5px;
+    padding: 7px 8px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .footer-btn:hover {
+    background: var(--hover-bg);
+    color: var(--text-primary);
+  }
+  .footer-btn.active {
+    background: var(--active-bg);
     color: var(--text-primary);
   }
 </style>
