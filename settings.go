@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// Settings is persisted portably next to the exe (<exe目录>\mdnote.ini), in
+// Settings is persisted portably next to the exe (<exe目录>\config.ini), in
 // plain INI format so it's easy for a user to inspect or hand-edit which
 // real filesystem location the left sidebar's root directory points at.
 // No registry / AppData usage, so the app stays fully removable ("绿色软件").
@@ -45,7 +45,7 @@ func settingsPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(filepath.Dir(exePath), "mdnote.ini"), nil
+	return filepath.Join(filepath.Dir(exePath), "config.ini"), nil
 }
 
 func loadSettings() (Settings, error) {

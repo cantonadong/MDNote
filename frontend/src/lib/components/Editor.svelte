@@ -421,6 +421,21 @@
     for (let d = resolved.depth; d > 0; d--) {
       const name = resolved.node(d).type.name;
       if (name === "listItem" || name === "taskItem") return resolved.before(d);
+      // A coordinate landing exactly on the pixel boundary between two <li>
+      // rows resolves to a position that sits directly inside the list
+      // itself (between its children), one depth shallower than either
+      // item — so the loop above never matches "listItem" and used to fall
+      // through all the way to resolved.before(1), i.e. the position right
+      // before the *whole list* (item 1), regardless of which two items the
+      // mouse was actually between. That made the handle flicker back to
+      // item 1 on every row crossing while scanning down a list. Snap to
+      // whichever item starts right after this point instead (or, at the
+      // list's own end, the item ending right before it) so a boundary
+      // always resolves to one of its real neighbors.
+      if (name === "bulletList" || name === "orderedList" || name === "taskList") {
+        if (resolved.nodeAfter) return resolved.pos;
+        if (resolved.nodeBefore) return resolved.pos - resolved.nodeBefore.nodeSize;
+      }
     }
     return resolved.before(1);
   }
@@ -748,7 +763,15 @@
     // currently is, making the menu visibly drift up/down as updateHandle()
     // recomputes handleTop underneath it.
     if (!editor || dragSource || menuOpen) return;
-    const result = editor.view.posAtCoords({ left: e.clientX, top: e.clientY });
+    // Listener lives on .editor-scroll (full width), not the narrower
+    // max-width:1000px content column, so the handle keeps following the
+    // mouse through the side margins too. posAtCoords needs a coordinate
+    // that actually lands over the doc though, so clamp x into the
+    // contenteditable's own horizontal bounds — same trick as
+    // onWrapperDblClick below.
+    const box = editor.view.dom.getBoundingClientRect();
+    const x = Math.min(Math.max(e.clientX, box.left + 1), box.right - 1);
+    const result = editor.view.posAtCoords({ left: x, top: e.clientY });
     if (!result) return;
     const resolved = editor.state.doc.resolve(result.pos);
     if (resolved.depth < 1) return;
@@ -1681,13 +1704,18 @@
   onkeydown={onWindowKeydown}
 />
 
-<div class="editor-scroll" bind:this={scrollEl} onwheel={onEditorWheel}>
+<div
+  class="editor-scroll"
+  bind:this={scrollEl}
+  onwheel={onEditorWheel}
+  onmousemove={onContentMouseMove}
+  onmouseleave={onContentMouseLeave}
+  role="presentation"
+>
   <div
     class="editor-content-col-wrapper"
     class:multiselect-active={multiSelectRange !== null}
     bind:this={wrapperEl}
-    onmousemove={onContentMouseMove}
-    onmouseleave={onContentMouseLeave}
     ondblclick={onWrapperDblClick}
     onpointerdown={onMarginPointerDown}
     role="presentation"

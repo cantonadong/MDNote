@@ -10,7 +10,7 @@
   function redo() {
     editorBridge.instance?.chain().focus().redo().run();
   }
-  function exportPdf() {
+  function printDoc() {
     window.print();
   }
   let buttons = $derived([
@@ -18,6 +18,13 @@
     { name: "new", title: t("toolbar.new"), action: () => appState.newTab(), disabled: () => false },
     { name: "save", title: t("toolbar.save"), action: () => appState.saveActiveTab(), disabled: () => false },
     { name: "save-as", title: t("toolbar.saveAs"), action: () => appState.saveActiveTabAs(), disabled: () => false },
+    {
+      name: "export",
+      title: t("toolbar.export"),
+      action: () => appState.exportActiveTabAsPdf(),
+      disabled: () => false,
+    },
+    { name: "print", title: t("toolbar.print"), action: printDoc, disabled: () => false },
     { name: "search", title: t("toolbar.find"), action: () => appState.openFindReplace(false), disabled: () => false },
     { name: "replace", title: t("toolbar.replace"), action: () => appState.openFindReplace(true), disabled: () => false },
     { name: "undo", title: t("toolbar.undo"), action: undo, disabled: () => !editorBridge.canUndo },
@@ -37,9 +44,6 @@
       <Icon name={btn.name} size={17} />
     </button>
   {/each}
-  <button class="tb-btn tb-export" title={t("toolbar.export")} aria-label={t("toolbar.export")} onclick={exportPdf}>
-    <Icon name="export" size={17} />
-  </button>
 </div>
 
 <style>
@@ -78,8 +82,5 @@
   .tb-btn:disabled:hover {
     background: transparent;
     color: var(--text-secondary);
-  }
-  .tb-export {
-    margin-left: auto;
   }
 </style>

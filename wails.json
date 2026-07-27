@@ -8,7 +8,14 @@
   "frontend:dev:serverUrl": "auto",
   "wailsjsdir": "./frontend/src/lib/wailsjs",
   "author": {
-    "name": "dongxiaoHu5",
-    "email": "cantonadong@gmail.com"
+    "name": "MDNote",
+    "email": ""
+  },
+  "info": {
+    "companyName": "MDNote",
+    "productName": "MD Note",
+    "productVersion": "1.0.0",
+    "copyright": "Copyright © MDNote",
+    "comments": "MD Note"
   }
 }

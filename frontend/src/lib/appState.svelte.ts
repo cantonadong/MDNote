@@ -2,6 +2,7 @@ import { api, type Settings } from "./api";
 import type { OutlineItem } from "./editor/outline";
 import { editorBridge } from "./editor/bridge.svelte";
 import { i18n, t, type LanguageSetting } from "./i18n.svelte";
+import { buildExportHtml } from "./pdfExport";
 
 export interface Tab {
   id: string;
@@ -356,6 +357,24 @@ class AppState {
 
   async saveActiveTabAs() {
     if (this.activeTab) await this.saveTabAs(this.activeTab);
+  }
+
+  // Silent "另存为PDF": picks a save path, then renders straight to a PDF via
+  // a throwaway hidden WebView2 instance on the Go side — never opens a
+  // print preview/print dialog. Distinct from the "打印" toolbar button,
+  // which still uses window.print() so the user can pick their own printer.
+  async exportActiveTabAsPdf() {
+    const tab = this.activeTab;
+    if (!tab) return;
+    try {
+      const path = await api.savePdfDialog(`${stripMdExt(tab.title)}.pdf`, this.targetDirForNewEntry());
+      if (!path) return;
+      const html = buildExportHtml(stripMdExt(tab.title));
+      if (!html) return;
+      await api.exportPdf(html, path);
+    } catch (e) {
+      this.showToast(`${t("toast.exportPdfFailed")}: ${e}`);
+    }
   }
 
   async requestCloseTab(tabId: string) {

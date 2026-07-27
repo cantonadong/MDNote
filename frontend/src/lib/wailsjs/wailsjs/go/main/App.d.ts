@@ -10,6 +10,8 @@ export function DeleteEntry(arg1:string):Promise<void>;
 
 export function EnsureLinkID(arg1:string):Promise<string>;
 
+export function ExportPdf(arg1:string,arg2:string):Promise<void>;
+
 export function FileExists(arg1:string):Promise<boolean>;
 
 export function GetInitialFile():Promise<string>;
@@ -41,6 +43,8 @@ export function SaveAppSettings(arg1:string,arg2:boolean):Promise<main.Settings>
 export function SaveFileDialog(arg1:string,arg2:string):Promise<string>;
 
 export function SaveOpenTabs(arg1:Array<string>,arg2:string):Promise<void>;
+
+export function SavePdfDialog(arg1:string,arg2:string):Promise<string>;
 
 export function SelectRootDir():Promise<main.Settings>;
 

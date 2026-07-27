@@ -18,6 +18,10 @@ export function EnsureLinkID(arg1) {
   return window['go']['main']['App']['EnsureLinkID'](arg1);
 }
 
+export function ExportPdf(arg1, arg2) {
+  return window['go']['main']['App']['ExportPdf'](arg1, arg2);
+}
+
 export function FileExists(arg1) {
   return window['go']['main']['App']['FileExists'](arg1);
 }
@@ -80,6 +84,10 @@ export function SaveFileDialog(arg1, arg2) {
 
 export function SaveOpenTabs(arg1, arg2) {
   return window['go']['main']['App']['SaveOpenTabs'](arg1, arg2);
+}
+
+export function SavePdfDialog(arg1, arg2) {
+  return window['go']['main']['App']['SavePdfDialog'](arg1, arg2);
 }
 
 export function SelectRootDir() {
