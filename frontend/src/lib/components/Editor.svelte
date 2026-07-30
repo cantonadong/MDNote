@@ -8,7 +8,7 @@
   import { Placeholder } from "@tiptap/extensions";
   import { TaskList } from "@tiptap/extension-task-list";
   import { TaskItem } from "@tiptap/extension-task-item";
-  import { Table } from "@tiptap/extension-table";
+  import { Table } from "$lib/editor/nodes/table";
   import { TableRow } from "@tiptap/extension-table-row";
   import { TableHeader } from "@tiptap/extension-table-header";
   import { TableCell } from "@tiptap/extension-table-cell";
@@ -26,17 +26,26 @@
   import { PageLink, FileLink, LinkClickHandler } from "$lib/editor/nodes/links";
   import { SlashTrigger } from "$lib/editor/nodes/slashTrigger";
   import { FullwidthHeadingShortcut } from "$lib/editor/nodes/fullwidthShortcuts";
+  import { AutoPairPunctuation } from "$lib/editor/nodes/autoPairPunctuation";
   import { slashMenuState } from "$lib/editor/slashMenu.svelte";
   import {
+    type TableRef,
     findTable,
     rowCount,
     colCount,
     addRow as tableAddRow,
-    deleteRow as tableDeleteRow,
     moveRow as tableMoveRow,
     addColumn as tableAddColumn,
-    deleteColumn as tableDeleteColumn,
     moveColumn as tableMoveColumn,
+    addRows as tableAddRows,
+    removeRows as tableRemoveRows,
+    deleteRow as tableDeleteRow,
+    addColumns as tableAddColumns,
+    removeColumns as tableRemoveColumns,
+    deleteColumn as tableDeleteColumn,
+    trailingEmptyRowCount,
+    trailingEmptyColumnCount,
+    setTableHeaderAttrs,
     slotIndex,
     slotToTargetIndex,
   } from "$lib/editor/tableOps";
@@ -130,16 +139,15 @@
   // drag/handle-position code reads it; nothing in the template binds to it
   // directly.
   let hoverBlockPos: number | null = null;
-  // The mouse's raw Y, used only to pick which visual line of a tall
-  // multi-line block (a long toggle, a table, a code block) the handle
-  // should sit next to — see lineRectNear(). Deliberately not a resolved
-  // document position: resolving the exact character under the mouse and
-  // asking ProseMirror for its rect was the previous approach, but a
-  // position with no real text under it (a bullet-list marker sits outside
-  // the actual text run) resolves to a boundary text offset whose reported
-  // rect can differ by a few px from a same-line mid-text position's rect,
-  // making the handle visibly jitter as the mouse moves purely
-  // horizontally within what's actually one unchanging line.
+  // The mouse's raw Y, used only to pick which hard-break-delimited "line"
+  // of a block the handle should sit next to — see lineRectNear(). A block
+  // that just word-wraps (no real Enter/backslash-newline inside it) is
+  // still one logical line no matter how many visual rows it wraps to, so
+  // that case ignores this and always pins to the block's first visual
+  // row. But a block containing actual hardBreak nodes (an explicit Enter
+  // the user typed, or a markdown hard line break) reads as several
+  // distinct lines even though it's one ProseMirror node — mouseY is what
+  // lets the handle follow which of those it's currently over.
   let hoverClientY: number | null = null;
 
   // -- Table row/column add/delete/drag gutters --
@@ -164,6 +172,217 @@
   let tableDragActive = false;
   let tableDropRowY = $state<number | null>(null);
   let tableDropColX = $state<number | null>(null);
+  // Live preview while dragging the add-row/add-col button: how many
+  // rows/columns would be added (removing:false) or removed (removing:true)
+  // if the pointer were released right now. Purely visual — addRows/
+  // removeRows etc. only ever run once, from the pointerup handler.
+  let tableRowAdjust = $state<{ count: number; removing: boolean } | null>(null);
+  let tableColAdjust = $state<{ count: number; removing: boolean } | null>(null);
+  // Which single row/column grip to actually render — only the one under
+  // the cursor, not every row/column at once, so the gutter doesn't turn
+  // into a wall of grips the instant the table is hovered at all.
+  let hoveredRowIndex = $state<number | null>(null);
+  let hoveredColIndex = $state<number | null>(null);
+
+  // Right-click menu on the whole-table drag handle (the generic
+  // .drag-handle from the block handle-group, shown whenever the hovered/
+  // cursor block is a table) — table-wide header row/column display toggles
+  // (see tableOps.setTableHeaderAttrs). Carries its own showHeaderRow/
+  // showHeaderColumn snapshot (rather than re-deriving from editor.state on
+  // every read) because `editor` is a plain variable, not $state — a
+  // $derived reading editor.state.doc would never notice a transaction and
+  // go stale the instant a toggle fired. Reassigning this object on each
+  // toggle keeps it correct with plain Svelte reactivity.
+  let tableHeaderMenu = $state<{
+    x: number;
+    y: number;
+    tablePos: number;
+    showHeaderRow: boolean;
+    showHeaderColumn: boolean;
+  } | null>(null);
+
+  // Resolved independently of tableGutter (which only tracks the DOM <table>
+  // while the mouse is directly over it) since the drag handle can also be
+  // showing via the keyboard/cursor fallback — see onDragHandlePointerDown.
+  function onDragHandleContextMenu(e: MouseEvent) {
+    if (!editor) return;
+    const pos = hoverBlockPos ?? topLevelBlockPos();
+    if (pos === null) return;
+    const node = editor.state.doc.nodeAt(pos);
+    if (!node || node.type.name !== "table") return;
+    e.preventDefault();
+    e.stopPropagation();
+    tableHeaderMenu = {
+      x: e.clientX,
+      y: e.clientY,
+      tablePos: pos,
+      showHeaderRow: !!node.attrs.showHeaderRow,
+      showHeaderColumn: !!node.attrs.showHeaderColumn,
+    };
+  }
+
+  function toggleTableHeaderRow() {
+    if (!editor || !tableHeaderMenu) return;
+    const node = editor.state.doc.nodeAt(tableHeaderMenu.tablePos);
+    if (!node || node.type.name !== "table") return;
+    const next = !tableHeaderMenu.showHeaderRow;
+    setTableHeaderAttrs(editor, { node, pos: tableHeaderMenu.tablePos }, { showHeaderRow: next });
+    tableHeaderMenu = { ...tableHeaderMenu, showHeaderRow: next };
+  }
+
+  function toggleTableHeaderColumn() {
+    if (!editor || !tableHeaderMenu) return;
+    const node = editor.state.doc.nodeAt(tableHeaderMenu.tablePos);
+    if (!node || node.type.name !== "table") return;
+    const next = !tableHeaderMenu.showHeaderColumn;
+    setTableHeaderAttrs(editor, { node, pos: tableHeaderMenu.tablePos }, { showHeaderColumn: next });
+    tableHeaderMenu = { ...tableHeaderMenu, showHeaderColumn: next };
+  }
+
+  // Popover opened by a plain click (no drag) on a row/column grip — insert
+  // above/below (or left/right) and delete-this-row/column actions, so any
+  // row or column is reachable without having to drag it to an edge first.
+  // rowCount/colCount are snapshotted at open time (same reasoning as
+  // tableHeaderMenu's showHeaderRow/Column above) purely to grey out the
+  // delete action once a table is down to its last row/column. The grip
+  // buttons themselves stopPropagation() on click (see the template) — a
+  // plain click still fires a native "click" right after the pointerup that
+  // opens this menu, which would otherwise bubble to svelte:window's onclick
+  // and close the menu in the same tick it opened.
+  let tableRowMenu = $state<{ x: number; y: number; tablePos: number; index: number; rowCount: number } | null>(null);
+  let tableColMenu = $state<{ x: number; y: number; tablePos: number; index: number; colCount: number } | null>(null);
+
+  function tableRowMenuRef(): TableRef | null {
+    if (!editor || !tableRowMenu) return null;
+    const node = editor.state.doc.nodeAt(tableRowMenu.tablePos);
+    if (!node || node.type.name !== "table") return null;
+    return { node, pos: tableRowMenu.tablePos };
+  }
+
+  function tableColMenuRef(): TableRef | null {
+    if (!editor || !tableColMenu) return null;
+    const node = editor.state.doc.nodeAt(tableColMenu.tablePos);
+    if (!node || node.type.name !== "table") return null;
+    return { node, pos: tableColMenu.tablePos };
+  }
+
+  function insertRowAboveAction() {
+    const ref = tableRowMenuRef();
+    if (!editor || !ref || !tableRowMenu) return;
+    tableAddRow(editor, ref, tableRowMenu.index);
+    tableRowMenu = null;
+  }
+
+  function insertRowBelowAction() {
+    const ref = tableRowMenuRef();
+    if (!editor || !ref || !tableRowMenu) return;
+    tableAddRow(editor, ref, tableRowMenu.index + 1);
+    tableRowMenu = null;
+  }
+
+  function deleteRowAction() {
+    const ref = tableRowMenuRef();
+    if (!editor || !ref || !tableRowMenu || tableRowMenu.rowCount <= 1) return;
+    tableDeleteRow(editor, ref, tableRowMenu.index);
+    tableRowMenu = null;
+  }
+
+  function insertColLeftAction() {
+    const ref = tableColMenuRef();
+    if (!editor || !ref || !tableColMenu) return;
+    tableAddColumn(editor, ref, tableColMenu.index);
+    tableColMenu = null;
+  }
+
+  function insertColRightAction() {
+    const ref = tableColMenuRef();
+    if (!editor || !ref || !tableColMenu) return;
+    tableAddColumn(editor, ref, tableColMenu.index + 1);
+    tableColMenu = null;
+  }
+
+  function deleteColAction() {
+    const ref = tableColMenuRef();
+    if (!editor || !ref || !tableColMenu || tableColMenu.colCount <= 1) return;
+    tableDeleteColumn(editor, ref, tableColMenu.index);
+    tableColMenu = null;
+  }
+
+  function updateHoveredGrip(clientX: number, clientY: number) {
+    if (!tableGutter || !wrapperEl) {
+      hoveredRowIndex = null;
+      hoveredColIndex = null;
+      return;
+    }
+    const containerRect = wrapperEl.getBoundingClientRect();
+    const localY = clientY - containerRect.top;
+    const localX = clientX - containerRect.left;
+    const rowIdx = tableGutter.rows.findIndex((r) => localY >= r.top && localY <= r.bottom);
+    const colIdx = tableGutter.cols.findIndex((c) => localX >= c.left && localX <= c.right);
+    hoveredRowIndex = rowIdx === -1 ? null : rowIdx;
+    hoveredColIndex = colIdx === -1 ? null : colIdx;
+  }
+  // Floating label that follows the pointer while dragging a row/column
+  // grip, naming which row/column is being moved — same recipe as
+  // blockDragGhost, since a bare blue insertion line alone doesn't say
+  // *what* is about to land there.
+  let tableDragLabel = $state<{ text: string; x: number; y: number } | null>(null);
+
+  // nodeDOM(pos) for a table node returns prosemirror-tables' own scroll
+  // wrapper <div> (what it registers as the table node's view DOM), not the
+  // <table> element nested inside it — drill down one level when needed.
+  function tableElAt(pos: number): HTMLTableElement | null {
+    const dom = editor?.view.nodeDOM(pos) as HTMLElement | null;
+    if (!dom) return null;
+    return dom instanceof HTMLTableElement ? dom : dom.querySelector("table");
+  }
+
+  // prosemirror-tables renders every table node through its own TableView
+  // (see the Table extension's `View` option) rather than Tiptap's usual
+  // renderHTML/mergeAttributes pipeline — that NodeView builds the <table>
+  // DOM itself and never looks at a node's other attrs, so showHeaderRow/
+  // showHeaderColumn (see editor/nodes/table.ts) never reach the live
+  // element on their own. Mirroring them onto the DOM by hand after every
+  // transaction is what makes the CSS in the .tiptap table[data-show-*]
+  // rules below actually apply while editing (markdown/HTML serialization
+  // is unaffected — that path uses the schema's DOMSerializer directly, not
+  // this NodeView, so it already reflects the attrs correctly).
+  function syncTableHeaderAttrs() {
+    if (!editor) return;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.type.name !== "table") return;
+      const tableEl = tableElAt(pos);
+      if (!tableEl) return;
+      tableEl.toggleAttribute("data-show-header-row", !!node.attrs.showHeaderRow);
+      tableEl.toggleAttribute("data-show-header-column", !!node.attrs.showHeaderColumn);
+    });
+  }
+
+  function labelForTableRow(index: number): string {
+    const table = tableGutter ? tableElAt(tableGutter.tablePos) : null;
+    const row = table?.rows[index];
+    const text = row
+      ? Array.from(row.cells)
+          .map((c) => c.textContent?.trim() ?? "")
+          .filter(Boolean)
+          .join(" · ")
+      : "";
+    if (text) return text.length > 40 ? `${text.slice(0, 40)}…` : text;
+    return t("table.rowLabel", { n: String(index + 1) });
+  }
+
+  function labelForTableCol(index: number): string {
+    const table = tableGutter ? tableElAt(tableGutter.tablePos) : null;
+    const text = table
+      ? Array.from(table.rows)
+          .slice(0, 3)
+          .map((r) => r.cells[index]?.textContent?.trim() ?? "")
+          .filter(Boolean)
+          .join(" · ")
+      : "";
+    if (text) return text.length > 40 ? `${text.slice(0, 40)}…` : text;
+    return t("table.colLabel", { n: String(index + 1) });
+  }
 
   function updateTableGutter(tableEl: HTMLTableElement) {
     if (!editor || !wrapperEl) return;
@@ -201,23 +420,137 @@
     };
   }
 
+  // findTable() walks *up* from a position inside a table to find its
+  // enclosing table node — the right tool for updateTableGutter(), which
+  // starts from posAtDOM (a position inside the table's DOM). But
+  // tableGutter.tablePos already *is* the table's own start position (that's
+  // what TableRef.pos means), not a position inside it — re-running
+  // findTable() on it resolves one level too shallow (into the table's
+  // *parent*) and never matches, so every add/delete/move here would
+  // silently no-op. Reading the node directly at that exact position is the
+  // correct way to re-derive the same TableRef later.
   function currentTableRef() {
     if (!editor || !tableGutter) return null;
-    return findTable(editor, tableGutter.tablePos);
+    const node = editor.state.doc.nodeAt(tableGutter.tablePos);
+    if (!node || node.type.name !== "table") return null;
+    return { node, pos: tableGutter.tablePos };
   }
 
-  function onAddTableRow() {
-    const ref = currentTableRef();
-    if (!editor || !ref) return;
-    tableAddRow(editor, ref, rowCount(ref.node));
-    tableGutter = null;
+  // Drag the add-row strip up/down: down previews adding N rows, up previews
+  // removing the trailing N rows (capped at rowCount-1) — nothing is
+  // actually added/removed until pointerup, and a plain click (no real
+  // movement) falls back to the original "add one row" behavior.
+  function onAddRowPointerDown(e: PointerEvent) {
+    if (e.button !== 0 || !editor || !wrapperEl || !tableGutter) return;
+    const gutter = tableGutter;
+    const rowH = gutter.rows.length > 0 ? (gutter.tableBottom - gutter.tableTop) / gutter.rows.length : 32;
+    const startY = e.clientY;
+    let started = false;
+    let steps = 0;
+
+    function onMove(ev: PointerEvent) {
+      ev.preventDefault();
+      if (!started) {
+        started = true;
+        tableDragActive = true;
+      }
+      steps = Math.round((ev.clientY - startY) / rowH);
+      if (steps > 0) tableRowAdjust = { count: steps, removing: false };
+      else if (steps < 0) {
+        // Only rows that are already empty can be dragged away — a run of
+        // content-filled rows at the bottom stops the preview from growing
+        // any further, the same limit removeRows() itself enforces.
+        const ref = currentTableRef();
+        const cap = ref ? Math.min(gutter.rows.length - 1, trailingEmptyRowCount(ref.node)) : 0;
+        const count = Math.min(-steps, cap);
+        tableRowAdjust = count > 0 ? { count, removing: true } : null;
+      } else tableRowAdjust = null;
+    }
+
+    function finish() {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      tableDragActive = false;
+      const adjust = tableRowAdjust;
+      tableRowAdjust = null;
+      const ref = currentTableRef();
+      if (ref) {
+        if (!started || steps === 0) {
+          tableAddRow(editor!, ref, rowCount(ref.node));
+        } else if (adjust) {
+          if (adjust.removing) tableRemoveRows(editor!, ref, rowCount(ref.node) - adjust.count, adjust.count);
+          else tableAddRows(editor!, ref, rowCount(ref.node), adjust.count);
+        }
+      }
+      tableGutter = null;
+    }
+
+    function onUp() {
+      finish();
+    }
+    function onCancel() {
+      finish();
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
   }
 
-  function onAddTableColumn() {
-    const ref = currentTableRef();
-    if (!editor || !ref) return;
-    tableAddColumn(editor, ref, colCount(ref.node));
-    tableGutter = null;
+  // Same gesture as onAddRowPointerDown, dragging left/right along the
+  // add-column strip instead.
+  function onAddColPointerDown(e: PointerEvent) {
+    if (e.button !== 0 || !editor || !wrapperEl || !tableGutter) return;
+    const gutter = tableGutter;
+    const colW = gutter.cols.length > 0 ? (gutter.tableRight - gutter.tableLeft) / gutter.cols.length : 80;
+    const startX = e.clientX;
+    let started = false;
+    let steps = 0;
+
+    function onMove(ev: PointerEvent) {
+      ev.preventDefault();
+      if (!started) {
+        started = true;
+        tableDragActive = true;
+      }
+      steps = Math.round((ev.clientX - startX) / colW);
+      if (steps > 0) tableColAdjust = { count: steps, removing: false };
+      else if (steps < 0) {
+        const ref = currentTableRef();
+        const cap = ref ? Math.min(gutter.cols.length - 1, trailingEmptyColumnCount(ref.node)) : 0;
+        const count = Math.min(-steps, cap);
+        tableColAdjust = count > 0 ? { count, removing: true } : null;
+      } else tableColAdjust = null;
+    }
+
+    function finish() {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      tableDragActive = false;
+      const adjust = tableColAdjust;
+      tableColAdjust = null;
+      const ref = currentTableRef();
+      if (ref) {
+        if (!started || steps === 0) {
+          tableAddColumn(editor!, ref, colCount(ref.node));
+        } else if (adjust) {
+          if (adjust.removing) tableRemoveColumns(editor!, ref, colCount(ref.node) - adjust.count, adjust.count);
+          else tableAddColumns(editor!, ref, colCount(ref.node), adjust.count);
+        }
+      }
+      tableGutter = null;
+    }
+
+    function onUp() {
+      finish();
+    }
+    function onCancel() {
+      finish();
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
   }
 
   function onRowGripPointerDown(e: PointerEvent, index: number) {
@@ -233,6 +566,9 @@
       if (!started) {
         started = true;
         tableDragActive = true;
+        tableDragLabel = { text: labelForTableRow(index), x: ev.clientX, y: ev.clientY };
+      } else if (tableDragLabel) {
+        tableDragLabel = { ...tableDragLabel, x: ev.clientX, y: ev.clientY };
       }
       // Both containerTop and ev.clientY are raw viewport coordinates,
       // already reflecting whatever CSS zoom is applied — same "screen
@@ -252,15 +588,15 @@
       window.removeEventListener("pointercancel", onCancel);
       tableDragActive = false;
       tableDropRowY = null;
+      tableDragLabel = null;
       if (started) {
         const ref = currentTableRef();
         if (ref) tableMoveRow(editor!, ref, index, slotToTargetIndex(slot, index));
         tableGutter = null;
       } else {
-        // Plain click, no drag: delete this row.
+        // Plain click, no drag: open the insert/delete menu for this row.
         const ref = currentTableRef();
-        if (ref) tableDeleteRow(editor!, ref, index);
-        tableGutter = null;
+        if (ref) tableRowMenu = { x: e.clientX, y: e.clientY, tablePos: ref.pos, index, rowCount: rowCount(ref.node) };
       }
     }
 
@@ -288,6 +624,9 @@
       if (!started) {
         started = true;
         tableDragActive = true;
+        tableDragLabel = { text: labelForTableCol(index), x: ev.clientX, y: ev.clientY };
+      } else if (tableDragLabel) {
+        tableDragLabel = { ...tableDragLabel, x: ev.clientX, y: ev.clientY };
       }
       const localX = ev.clientX - containerLeft;
       slot = slotIndex(mids, localX);
@@ -302,14 +641,15 @@
       window.removeEventListener("pointercancel", onCancel);
       tableDragActive = false;
       tableDropColX = null;
+      tableDragLabel = null;
       if (started) {
         const ref = currentTableRef();
         if (ref) tableMoveColumn(editor!, ref, index, slotToTargetIndex(slot, index));
         tableGutter = null;
       } else {
+        // Plain click, no drag: open the insert/delete menu for this column.
         const ref = currentTableRef();
-        if (ref) tableDeleteColumn(editor!, ref, index);
-        tableGutter = null;
+        if (ref) tableColMenu = { x: e.clientX, y: e.clientY, tablePos: ref.pos, index, colCount: colCount(ref.node) };
       }
     }
 
@@ -536,35 +876,116 @@
     handleHeight = Math.max(24, lineRect.bottom - lineRect.top);
   }
 
-  // Finds the actual rendered line box the handle should sit next to. A
-  // Range over the block's DOM content fragments into one client rect per
-  // wrapped visual line (unlike Element.getClientRects(), which reports one
-  // rect for the whole box); picking whichever rect vertically contains
-  // mouseY is what keeps a tall multi-line block's handle next to the
-  // hovered line instead of always the block's top. Falls back to the
+  // Finds the actual rendered line box the handle should sit next to.
+  // First splits the block's DOM into "segments" at each real hardBreak
+  // (an explicit Enter/backslash-newline the user or source markdown put
+  // inside this one node) — see the segments comment below — then, within
+  // whichever segment mouseY falls in, anchors to that segment's *first*
+  // visual-line rect (a Range fragments into one client rect per wrapped
+  // line, unlike Element.getClientRects() which reports one rect for the
+  // whole box). A segment that itself word-wraps across several visual
+  // rows is still one logical line, so the handle stays pinned to its
+  // first row instead of chasing the cursor down through the wrap — but
+  // moving into a *different* hardBreak segment of the same block does
+  // move the handle, since each such segment reads as its own line to the
+  // user even though ProseMirror stores it as one node. Falls back to the
   // block's own bounding rect for an empty block (no text to fragment) or
-  // when mouseY isn't available (keyboard-cursor fallback, or nothing
-  // matched — e.g. mouse hovering the block's own bottom margin).
+  // when mouseY isn't available (keyboard-cursor fallback).
+  // A Range's getClientRects() only fragments per wrapped visual line when
+  // its boundary points sit among actual text/inline content — if instead
+  // the range spans whole child *elements* (e.g. selecting an <li>'s
+  // contents when that <li> just wraps a single inner <p>), each such
+  // child contributes one opaque rect for its *entire* box, wrapped lines
+  // and all. That's why a wrapped bullet/task list item used to report a
+  // single rect spanning both its visual lines (the handle would land
+  // between them) — nodeDOM(pos) for a listItem returns the <li>, one level
+  // above where its text actually lives. Descending through single-element
+  // wrapper chains (<li> → <p>, a toggle/callout's own single-paragraph
+  // wrapper, etc.) until reaching the level that directly holds text/inline
+  // content/<br> gets the Range boundaries down to where line-fragmenting
+  // actually happens.
+  function deepestLineContainer(el: HTMLElement): HTMLElement {
+    let cur = el;
+    for (;;) {
+      let hasInline = false;
+      const elementChildren: HTMLElement[] = [];
+      for (const node of Array.from(cur.childNodes)) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          if ((node.textContent ?? "").trim().length > 0) hasInline = true;
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+          const child = node as HTMLElement;
+          if (child.tagName === "BR" || getComputedStyle(child).display.startsWith("inline")) {
+            hasInline = true;
+          } else {
+            elementChildren.push(child);
+          }
+        }
+      }
+      if (hasInline || elementChildren.length !== 1) return cur;
+      cur = elementChildren[0];
+    }
+  }
+
   function lineRectNear(pos: number, mouseY: number | null): { top: number; bottom: number } | null {
     if (!editor) return null;
-    const dom = editor.view.nodeDOM(pos) as HTMLElement | null;
-    if (!dom) return null;
-    const range = document.createRange();
-    range.selectNodeContents(dom);
-    const rects = Array.from(range.getClientRects());
+    const outer = editor.view.nodeDOM(pos) as HTMLElement | null;
+    if (!outer) return null;
+    const dom = deepestLineContainer(outer);
+
+    // ProseMirror auto-appends a `.ProseMirror-trailingBreak` <br> to keep
+    // an empty trailing line rendered/clickable — that's a rendering aid,
+    // not a line break the user authored, so it must not itself split off
+    // an extra (empty, non-rendering) segment at the end.
+    const breaks = Array.from(dom.querySelectorAll("br")).filter(
+      (br) => !br.classList.contains("ProseMirror-trailingBreak"),
+    );
+
+    const segments: Range[] = [];
+    if (breaks.length === 0) {
+      const whole = document.createRange();
+      whole.selectNodeContents(dom);
+      segments.push(whole);
+    } else {
+      let startNode: Node = dom;
+      let startOffset = 0;
+      for (const br of breaks) {
+        const seg = document.createRange();
+        seg.setStart(startNode, startOffset);
+        seg.setEndBefore(br);
+        segments.push(seg);
+        const parent = br.parentNode!;
+        startNode = parent;
+        startOffset = Array.prototype.indexOf.call(parent.childNodes, br) + 1;
+      }
+      const last = document.createRange();
+      last.setStart(startNode, startOffset);
+      last.setEnd(dom, dom.childNodes.length);
+      segments.push(last);
+    }
+
     if (mouseY !== null) {
-      for (const r of rects) {
-        if (mouseY >= r.top && mouseY <= r.bottom) return { top: r.top, bottom: r.bottom };
+      for (const seg of segments) {
+        const rects = Array.from(seg.getClientRects());
+        if (rects.some((r) => mouseY >= r.top && mouseY <= r.bottom)) {
+          const first = rects[0];
+          return { top: first.top, bottom: first.bottom };
+        }
       }
     }
-    if (rects.length > 0) {
-      const first = rects[0];
-      return { top: first.top, bottom: first.bottom };
+    for (const seg of segments) {
+      const rects = Array.from(seg.getClientRects());
+      if (rects.length > 0) return { top: rects[0].top, bottom: rects[0].bottom };
     }
     if (typeof dom.getBoundingClientRect !== "function") return null;
     const rect = dom.getBoundingClientRect();
     if (!rect.width && !rect.height) return null;
-    return { top: rect.top, bottom: rect.top + Math.min(rect.height, 24) };
+    // Center rather than anchor at the top: a horizontalRule's own box (see
+    // the .tiptap hr rule) is mostly padding around a 1px line, so anchoring
+    // a 24px handle at rect.top would leave it floating well above the
+    // visible rule instead of next to it.
+    const height = Math.min(rect.height, 24);
+    const top = rect.top + (rect.height - height) / 2;
+    return { top, bottom: top + height };
   }
 
   // -- Block drag-reorder state (read by the hover handlers just below,
@@ -771,22 +1192,42 @@
     // onWrapperDblClick below.
     const box = editor.view.dom.getBoundingClientRect();
     const x = Math.min(Math.max(e.clientX, box.left + 1), box.right - 1);
-    const result = editor.view.posAtCoords({ left: x, top: e.clientY });
-    if (!result) return;
-    const resolved = editor.state.doc.resolve(result.pos);
-    if (resolved.depth < 1) return;
-    const pos = effectiveBlockPos(resolved);
-    hoverClientY = e.clientY;
-    if (pos !== hoverBlockPos) {
-      hoverBlockPos = pos;
+    const target = e.target as HTMLElement | null;
+    // A horizontalRule renders as a hairline with most of its visual gap
+    // living in padding/margin, not the line itself — posAtCoords maps
+    // coordinates to the nearest *text* position, so hovering that padding
+    // finds nothing (or resolves into whichever paragraph is nearest) and
+    // the handle never lands on the divider. Resolving straight from the
+    // DOM element sidesteps that: posAtDOM always finds its exact position
+    // regardless of how little of its box carries real content.
+    const hrEl = target?.closest?.("hr") as HTMLElement | null;
+    let pos: number;
+    if (hrEl && editor.view.dom.contains(hrEl)) {
+      pos = editor.view.posAtDOM(hrEl, 0);
+    } else {
+      const result = editor.view.posAtCoords({ left: x, top: e.clientY });
+      if (!result) return;
+      const resolved = editor.state.doc.resolve(result.pos);
+      if (resolved.depth < 1) return;
+      pos = effectiveBlockPos(resolved);
     }
+    hoverClientY = e.clientY;
+    hoverBlockPos = pos;
     updateHandle();
 
-    const tableEl = (e.target as HTMLElement)?.closest?.("table") as HTMLTableElement | null;
+    const tableEl = target?.closest?.("table") as HTMLTableElement | null;
     if (tableEl) {
       updateTableGutter(tableEl);
-    } else if (tableGutter && !tableDragActive) {
+      if (!tableDragActive) updateHoveredGrip(e.clientX, e.clientY);
+    } else if (tableGutter && !tableDragActive && !target?.closest?.(".table-gutter-btn, .table-gutter-add")) {
+      // The grip/add buttons are absolutely-positioned siblings of the
+      // <table>, not descendants of it — closest("table") alone would fail
+      // the instant the cursor reaches one of them (reached by moving off
+      // the table into the gutter strip to its left/above), clearing the
+      // gutter out from under the very controls the user is trying to grab.
       tableGutter = null;
+      hoveredRowIndex = null;
+      hoveredColIndex = null;
     }
   }
 
@@ -795,7 +1236,11 @@
     hoverBlockPos = null;
     hoverClientY = null;
     if (!menuOpen) updateHandle();
-    if (!tableDragActive) tableGutter = null;
+    if (!tableDragActive) {
+      tableGutter = null;
+      hoveredRowIndex = null;
+      hoveredColIndex = null;
+    }
   }
 
   // Double-clicking the wrapper's own margin (its 56px/64px/30vh padding
@@ -1602,6 +2047,7 @@
           link: { openOnClick: false },
         }),
         FullwidthHeadingShortcut,
+        AutoPairPunctuation,
         Markdown.configure({ html: true, transformPastedText: true }),
         SearchHighlight,
         TaskList,
@@ -1649,7 +2095,11 @@
         if (!menuOpen && hoverBlockPos === null) handleTop = null;
         slashMenuState.close();
       },
-      onTransaction: () => syncUndoRedo(),
+      onCreate: () => syncTableHeaderAttrs(),
+      onTransaction: () => {
+        syncUndoRedo();
+        syncTableHeaderAttrs();
+      },
     });
     editorBridge.instance = editor;
     editorBridge.scrollToPos = scrollToPos;
@@ -1700,6 +2150,9 @@
   onclick={() => {
     if (menuOpen) closeMenu();
     if (slashMenuState.open) slashMenuState.close();
+    if (tableHeaderMenu) tableHeaderMenu = null;
+    if (tableRowMenu) tableRowMenu = null;
+    if (tableColMenu) tableColMenu = null;
   }}
   onkeydown={onWindowKeydown}
 />
@@ -1752,10 +2205,11 @@
         <button
           class="drag-handle"
           class:handle-lg={handleBtnSize === 30}
-          title={handleFormatIcon ? t("block.dragOrChange") : t("block.drag")}
-          aria-label={handleFormatIcon ? t("block.dragOrChange") : t("block.drag")}
+          title={handleFormatIcon === "table" ? t("block.dragTable") : handleFormatIcon ? t("block.dragOrChange") : t("block.drag")}
+          aria-label={handleFormatIcon === "table" ? t("block.dragTable") : handleFormatIcon ? t("block.dragOrChange") : t("block.drag")}
           onmousedown={preventBlur}
           onpointerdown={onDragHandlePointerDown}
+          oncontextmenu={onDragHandleContextMenu}
         >
           <Icon name="grip" size={handleBtnSize === 30 ? 20 : 18} />
         </button>
@@ -1775,50 +2229,84 @@
       <div class="block-drop-indicator" style={`top:${dropIndicatorTop / zoomScale}px`}></div>
     {/if}
     {#if tableGutter}
-      {#each tableGutter.rows as row, i (i)}
+      {#if hoveredRowIndex !== null}
+        {@const rowIndex = hoveredRowIndex}
+        {@const row = tableGutter.rows[rowIndex]}
         <button
           class="table-gutter-btn table-row-grip"
-          style={`top:${(row.top + row.bottom) / 2 / zoomScale - 10}px; left:${tableGutter.tableLeft / zoomScale - 26}px`}
+          style={`top:${(row.top + row.bottom) / 2 / zoomScale - 14}px; left:${tableGutter.tableLeft / zoomScale - 14}px`}
           title={t("table.rowGrip")}
           aria-label={t("table.rowGrip")}
           onmousedown={preventBlur}
-          onpointerdown={(e) => onRowGripPointerDown(e, i)}
+          onpointerdown={(e) => onRowGripPointerDown(e, rowIndex)}
+          onclick={(e) => e.stopPropagation()}
         >
-          <Icon name="grip" size={13} />
+          <Icon name="grip4" size={16} />
         </button>
-      {/each}
+      {/if}
       <button
         class="table-gutter-add table-add-row"
         style={`top:${tableGutter.tableBottom / zoomScale}px; left:${tableGutter.tableLeft / zoomScale}px; width:${(tableGutter.tableRight - tableGutter.tableLeft) / zoomScale}px`}
         title={t("table.addRow")}
         aria-label={t("table.addRow")}
         onmousedown={preventBlur}
-        onclick={onAddTableRow}
+        onpointerdown={onAddRowPointerDown}
       >
         <Icon name="plus" size={13} />
       </button>
-      {#each tableGutter.cols as col, i (i)}
+      {#if hoveredColIndex !== null}
+        {@const colIndex = hoveredColIndex}
+        {@const col = tableGutter.cols[colIndex]}
         <button
           class="table-gutter-btn table-col-grip"
-          style={`left:${(col.left + col.right) / 2 / zoomScale - 10}px; top:${tableGutter.tableTop / zoomScale - 24}px`}
+          style={`left:${(col.left + col.right) / 2 / zoomScale - 14}px; top:${tableGutter.tableTop / zoomScale - 14}px`}
           title={t("table.colGrip")}
           aria-label={t("table.colGrip")}
           onmousedown={preventBlur}
-          onpointerdown={(e) => onColGripPointerDown(e, i)}
+          onpointerdown={(e) => onColGripPointerDown(e, colIndex)}
+          onclick={(e) => e.stopPropagation()}
         >
-          <Icon name="grip" size={13} />
+          <Icon name="grip4" size={16} />
         </button>
-      {/each}
+      {/if}
       <button
         class="table-gutter-add table-add-col"
         style={`left:${tableGutter.tableRight / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px`}
         title={t("table.addCol")}
         aria-label={t("table.addCol")}
         onmousedown={preventBlur}
-        onclick={onAddTableColumn}
+        onpointerdown={onAddColPointerDown}
       >
         <Icon name="plus" size={13} />
       </button>
+      {#if tableRowAdjust}
+        {@const rowH = tableGutter.rows.length > 0 ? (tableGutter.tableBottom - tableGutter.tableTop) / tableGutter.rows.length : 32}
+        {#if tableRowAdjust.removing}
+          <div
+            class="table-resize-remove"
+            style={`top:${(tableGutter.tableBottom - rowH * tableRowAdjust.count) / zoomScale}px; left:${tableGutter.tableLeft / zoomScale}px; width:${(tableGutter.tableRight - tableGutter.tableLeft) / zoomScale}px; height:${(rowH * tableRowAdjust.count) / zoomScale}px`}
+          ></div>
+        {:else}
+          <div
+            class="table-resize-ghost"
+            style={`top:${tableGutter.tableBottom / zoomScale}px; left:${tableGutter.tableLeft / zoomScale}px; width:${(tableGutter.tableRight - tableGutter.tableLeft) / zoomScale}px; height:${(rowH * tableRowAdjust.count) / zoomScale}px`}
+          ></div>
+        {/if}
+      {/if}
+      {#if tableColAdjust}
+        {@const colW = tableGutter.cols.length > 0 ? (tableGutter.tableRight - tableGutter.tableLeft) / tableGutter.cols.length : 80}
+        {#if tableColAdjust.removing}
+          <div
+            class="table-resize-remove"
+            style={`left:${(tableGutter.tableRight - colW * tableColAdjust.count) / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px; width:${(colW * tableColAdjust.count) / zoomScale}px`}
+          ></div>
+        {:else}
+          <div
+            class="table-resize-ghost"
+            style={`left:${tableGutter.tableRight / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px; width:${(colW * tableColAdjust.count) / zoomScale}px`}
+          ></div>
+        {/if}
+      {/if}
     {/if}
     {#if tableDropRowY !== null && tableGutter}
       <div
@@ -1831,6 +2319,79 @@
         class="table-drop-indicator table-drop-col"
         style={`left:${tableDropColX / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px`}
       ></div>
+    {/if}
+    {#if tableHeaderMenu}
+      <div
+        class="context-menu table-header-menu"
+        style={`left:${tableHeaderMenu.x}px; top:${tableHeaderMenu.y}px`}
+        onclick={(e) => e.stopPropagation()}
+        role="presentation"
+      >
+        <button class="switch-row" onmousedown={preventBlur} onclick={toggleTableHeaderRow}>
+          <span>{t("table.showHeaderRow")}</span>
+          <span class="switch" class:on={tableHeaderMenu.showHeaderRow} aria-hidden="true">
+            <span class="switch-knob"></span>
+          </span>
+        </button>
+        <button class="switch-row" onmousedown={preventBlur} onclick={toggleTableHeaderColumn}>
+          <span>{t("table.showHeaderColumn")}</span>
+          <span class="switch" class:on={tableHeaderMenu.showHeaderColumn} aria-hidden="true">
+            <span class="switch-knob"></span>
+          </span>
+        </button>
+      </div>
+    {/if}
+    {#if tableRowMenu}
+      <div
+        class="context-menu table-action-menu"
+        style={`left:${tableRowMenu.x}px; top:${tableRowMenu.y}px`}
+        onclick={(e) => e.stopPropagation()}
+        role="presentation"
+      >
+        <button onmousedown={preventBlur} onclick={insertRowAboveAction}>
+          <Icon name="row-insert-above" size={14} />
+          <span>{t("table.insertRowAbove")}</span>
+        </button>
+        <button onmousedown={preventBlur} onclick={insertRowBelowAction}>
+          <Icon name="row-insert-below" size={14} />
+          <span>{t("table.insertRowBelow")}</span>
+        </button>
+        <button
+          class="menu-danger"
+          disabled={tableRowMenu.rowCount <= 1}
+          onmousedown={preventBlur}
+          onclick={deleteRowAction}
+        >
+          <Icon name="trash" size={14} />
+          <span>{t("table.deleteRow")}</span>
+        </button>
+      </div>
+    {/if}
+    {#if tableColMenu}
+      <div
+        class="context-menu table-action-menu"
+        style={`left:${tableColMenu.x}px; top:${tableColMenu.y}px`}
+        onclick={(e) => e.stopPropagation()}
+        role="presentation"
+      >
+        <button onmousedown={preventBlur} onclick={insertColLeftAction}>
+          <Icon name="col-insert-left" size={14} />
+          <span>{t("table.insertColLeft")}</span>
+        </button>
+        <button onmousedown={preventBlur} onclick={insertColRightAction}>
+          <Icon name="col-insert-right" size={14} />
+          <span>{t("table.insertColRight")}</span>
+        </button>
+        <button
+          class="menu-danger"
+          disabled={tableColMenu.colCount <= 1}
+          onmousedown={preventBlur}
+          onclick={deleteColAction}
+        >
+          <Icon name="trash" size={14} />
+          <span>{t("table.deleteCol")}</span>
+        </button>
+      </div>
     {/if}
     {#if slashMenuState.open}
       <div
@@ -1860,6 +2421,11 @@
 {#if blockDragGhost}
   <div class="block-drag-ghost" style={`left:${blockDragGhost.x}px; top:${blockDragGhost.y}px`}>
     {blockDragGhost.text}
+  </div>
+{/if}
+{#if tableDragLabel}
+  <div class="block-drag-ghost" style={`left:${tableDragLabel.x}px; top:${tableDragLabel.y}px`}>
+    {tableDragLabel.text}
   </div>
 {/if}
 
@@ -2101,14 +2667,34 @@
     background: none;
     padding: 0;
   }
+  /* A bare 1px border-top with margin around it means the element's own
+     rendered box (what posAtCoords/getBoundingClientRect see) is just that
+     1px sliver — hovering anywhere in its margin resolves to whichever
+     paragraph is nearest instead, so the block handle never lands on a
+     divider. Folding that margin into padding (with the line drawn via a
+     background clipped to the content box, so it stays a visually centered
+     1px rule) keeps the same total footprint but makes the *whole* gap part
+     of the hr's own hoverable box. */
   .editor-content-col :global(.tiptap hr) {
     border: none;
-    border-top: 1px solid var(--border);
-    margin: 1.5em 0;
+    height: 1px;
+    margin: 0;
+    padding: 1.5em 0;
+    background: var(--border);
+    background-clip: content-box;
+    box-sizing: content-box;
+  }
+  /* prosemirror-tables' own TableView NodeView wraps every <table> in this
+     div (regardless of the extension's `renderWrapper` option, which is a
+     separate mechanism) — giving it the horizontal scrollbar here, rather
+     than the table itself, keeps row/column borders looking continuous
+     while only the cell content area scrolls. */
+  .editor-content-col :global(.tiptap .tableWrapper) {
+    overflow-x: auto;
+    margin: 0.6em 0;
   }
   .editor-content-col :global(.tiptap table) {
     border-collapse: collapse;
-    margin: 0.6em 0;
     width: 100%;
   }
   .editor-content-col :global(.tiptap th),
@@ -2119,14 +2705,19 @@
     vertical-align: top;
   }
   .editor-content-col :global(.tiptap th) {
-    background: var(--sidebar-bg);
-    font-weight: 600;
     text-align: left;
   }
-  /* First column of data rows gets the same header treatment as the first
-     row (th) — together they read as a bold/highlighted row+column frame,
-     like a spreadsheet's row/column headers. */
-  .editor-content-col :global(.tiptap td:first-child) {
+  /* The first row is always a real <th> (tiptap-markdown's GFM table
+     serializer requires it), but whether it actually *looks* like a header
+     is the table's own showHeaderRow toggle (table-header-menu, right-click
+     the row grip) — off by default, so a fresh table reads as plain cells
+     until turned on. Same story for the first column via showHeaderColumn,
+     except that one is CSS-only (its cells stay ordinary tableCell nodes). */
+  .editor-content-col :global(.tiptap table[data-show-header-row] tr:first-child > th) {
+    background: var(--sidebar-bg);
+    font-weight: 600;
+  }
+  .editor-content-col :global(.tiptap table[data-show-header-column] td:first-child) {
     background: var(--sidebar-bg);
     font-weight: 600;
   }
@@ -2137,11 +2728,48 @@
     margin: 0.4em 0;
   }
   .editor-content-col :global(.tiptap details.toggle-list > summary) {
+    display: flex;
+    align-items: center;
+    gap: 2px;
     cursor: pointer;
     font-weight: 500;
+    list-style: none;
   }
-  .editor-content-col :global(.tiptap details.toggle-list > summary::marker) {
+  /* The native disclosure marker only renders because Chromium's UA
+     stylesheet gives <summary> `display: list-item` — switching it to flex
+     above (for the icon+title layout) already drops it, since ::marker only
+     applies to list-item boxes. This is the explicit belt-and-suspenders
+     version for engines that still render it another way: a custom
+     .toggle-icon triangle below can carry a hover box, which a ::marker
+     pseudo-element's very limited box model can't. */
+  .editor-content-col :global(.tiptap details.toggle-list > summary::-webkit-details-marker) {
+    display: none;
+  }
+  .editor-content-col :global(.tiptap .toggle-icon) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    flex-shrink: 0;
     color: var(--text-secondary);
+  }
+  .editor-content-col :global(.tiptap .toggle-icon:hover) {
+    background: var(--hover-bg-strong);
+    color: var(--text-primary);
+  }
+  .editor-content-col :global(.tiptap .toggle-icon::before) {
+    content: "";
+    width: 0;
+    height: 0;
+    border-style: solid;
+    border-width: 5px 0 5px 8.7px;
+    border-color: transparent transparent transparent currentColor;
+    transition: transform 0.12s ease;
+  }
+  .editor-content-col :global(.tiptap details.toggle-list[open] > summary .toggle-icon::before) {
+    transform: rotate(90deg);
   }
   .editor-content-col :global(.tiptap details.toggle-list[open] > summary) {
     margin-bottom: 0.2em;
@@ -2227,6 +2855,33 @@
   .editor-content-col :global(.tiptap a.link-chip:hover) {
     background: var(--hover-bg-strong);
   }
+  /* Set only after a click actually fails to find the target (see
+     linkKey/invalidLinksKey in links.ts) — never assumed just because a
+     path looks suspicious, and cleared again the moment a click succeeds. */
+  .editor-content-col :global(.tiptap a.link-chip-invalid) {
+    background: rgba(224, 62, 62, 0.12);
+    border-color: rgba(224, 62, 62, 0.35);
+  }
+  .editor-content-col :global(.tiptap a.link-chip-invalid:hover) {
+    background: rgba(224, 62, 62, 0.2);
+  }
+  /* Swaps the rendered glyph for a warning triangle without touching the
+     node's actual content/attrs (which stay whatever was saved to disk) —
+     the original glyph is hidden in place and a ::after overlay drawn over
+     the same box shows the warning instead. */
+  .editor-content-col :global(.tiptap a.link-chip-invalid .link-chip-icon) {
+    position: relative;
+    visibility: hidden;
+  }
+  .editor-content-col :global(.tiptap a.link-chip-invalid .link-chip-icon::after) {
+    content: "\26A0\FE0F";
+    position: absolute;
+    inset: 0;
+    visibility: visible;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
   /* Plain hyperlinks (StarterKit's Link mark — typed/pasted URLs, or
      [text](url) markdown), as opposed to the page/file "chip" links above.
      Opened via the system browser — see LinkClickHandler in links.ts. */
@@ -2301,19 +2956,27 @@
     pointer-events: none;
   }
   /* Table row/column gutters: one small grip per row (left of the table) /
-     column (above the table) — drag it to reorder, plain-click to delete.
-     Plus a trailing "+" strip to append a row/column at the end. */
+     column (above the table) — drag it to reorder; the row grip also opens
+     a right-click menu (header row/column display toggles). Plus a trailing
+     "+" strip to append a row/column at the end. */
+  /* Same footprint as .block-handle/.drag-handle (the left-side hover
+     button) — 28px, radius 5px — so the two kinds of grip read as the same
+     control instead of a visibly different size/shape. Unlike that button
+     though, this one is only ever rendered for the single row/column
+     currently under the cursor (see hoveredRowIndex/hoveredColIndex), so its
+     background shows immediately rather than waiting for a further :hover
+     on the small 28px target itself. */
   .table-gutter-btn {
     position: absolute;
-    width: 20px;
-    height: 20px;
+    width: 28px;
+    height: 28px;
     display: flex;
     align-items: center;
     justify-content: center;
     border: none;
-    border-radius: 4px;
-    background: transparent;
-    color: var(--text-secondary);
+    border-radius: 5px;
+    background: var(--hover-bg);
+    color: var(--text-primary);
     cursor: grab;
     z-index: 40;
   }
@@ -2324,21 +2987,24 @@
     background: var(--hover-bg-strong);
     color: var(--text-primary);
   }
+  /* Rendered only while tableGutter is set (i.e. the table is already being
+     hovered — see the template), so this doesn't need its own opacity gate
+     on top of that: it should be visible the instant it exists, not require
+     the pointer to already be on this exact 14px strip to discover it (that
+     was unreachable — nothing hinted the strip was there to hover). */
   .table-gutter-add {
     position: absolute;
     display: flex;
     align-items: center;
     justify-content: center;
     border: none;
-    background: transparent;
+    background: var(--sidebar-bg);
     color: var(--text-secondary);
     cursor: pointer;
-    opacity: 0;
     z-index: 40;
   }
   .table-gutter-add:hover {
-    opacity: 1;
-    background: var(--hover-bg);
+    background: var(--hover-bg-strong);
     color: var(--text-primary);
   }
   .table-add-row {
@@ -2363,6 +3029,126 @@
   .table-drop-col {
     width: 3px;
     margin-left: -1.5px;
+  }
+  /* Live preview while dragging the add-row/add-col strip — see
+     tableRowAdjust/tableColAdjust. Neither ever mutates the doc by itself;
+     both are purely visual until pointerup. */
+  .table-resize-ghost {
+    position: absolute;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 1px dashed var(--accent);
+    pointer-events: none;
+    z-index: 39;
+  }
+  .table-resize-remove {
+    position: absolute;
+    background: rgba(224, 62, 62, 0.16);
+    border: 1px dashed #e03e3e;
+    pointer-events: none;
+    z-index: 39;
+  }
+  /* Right-click menu on the whole-table drag handle (see
+     onDragHandleContextMenu) — same floating-panel look as the sidebar's
+     tree-node context menu. */
+  .context-menu {
+    position: fixed;
+    z-index: 1000;
+    background: var(--content-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+  }
+  .table-header-menu {
+    min-width: 200px;
+    padding: 6px;
+    gap: 2px;
+  }
+  /* Row/column insert-above/below (or left/right) + delete popover, opened
+     by a plain click on a row/col grip — same look as .block-menu's items. */
+  .table-action-menu {
+    min-width: 180px;
+    padding: 4px;
+    gap: 1px;
+  }
+  .table-action-menu button {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    gap: 10px;
+    border: none;
+    background: none;
+    text-align: left;
+    padding: 7px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    color: var(--text-primary);
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  .table-action-menu button:hover {
+    background: var(--hover-bg);
+  }
+  .table-action-menu button :global(svg) {
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+  .table-action-menu button.menu-danger:hover {
+    background: rgba(224, 62, 62, 0.12);
+  }
+  .table-action-menu button.menu-danger:hover :global(svg) {
+    color: #e03e3e;
+  }
+  .table-action-menu button:disabled {
+    opacity: 0.4;
+    cursor: default;
+    pointer-events: none;
+  }
+  .switch-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    padding: 6px 8px;
+    border: none;
+    border-radius: 5px;
+    background: none;
+    font-size: 13px;
+    font-family: inherit;
+    color: var(--text-primary);
+    cursor: pointer;
+    text-align: left;
+  }
+  .switch-row:hover {
+    background: var(--hover-bg);
+  }
+  .switch {
+    position: relative;
+    flex-shrink: 0;
+    width: 32px;
+    height: 18px;
+    border-radius: 9px;
+    background: var(--border);
+    transition: background 0.15s ease;
+  }
+  .switch.on {
+    background: var(--accent);
+  }
+  .switch-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #fff;
+    transition: left 0.15s ease;
+  }
+  .switch.on .switch-knob {
+    left: 16px;
   }
   /* One rounded overlay per row that should read as "highlighted" — either
      a whole block covered by a margin drag-select (multiSelectRects) or the

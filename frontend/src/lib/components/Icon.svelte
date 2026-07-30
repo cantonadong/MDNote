@@ -20,6 +20,7 @@
     close: "M18 6 6 18 M6 6l12 12",
     "more-horizontal": "M5 12h.01 M12 12h.01 M19 12h.01",
     refresh: "M21 12a9 9 0 1 1-2.64-6.36 M21 4v6h-6",
+    cloud: "M7 18a4.5 4.5 0 0 1-.5-8.97A5.5 5.5 0 0 1 17.3 8 4 4 0 0 1 17 18H7Z",
     trash: "M4 7h16 M9 7V4h6v3 M6 7l1 13h10l1-13",
     rename: "M12 20h9 M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z",
     "chevron-up": "M18 15l-6-6-6 6",
@@ -30,9 +31,12 @@
     code: "M9 6 3 12l6 6 M15 6l6 6-6 6",
     minus: "M5 12h14",
     "check-square": "M9 11l3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11",
-    toggle: "M9 18l6-6-6-6 M4 4h2v16H4z",
     megaphone: "M3 11v2a1 1 0 0 0 1 1h2l4 4V6L6 10H4a1 1 0 0 0-1 1Z M15 8a4 4 0 0 1 0 8 M18 5a8 8 0 0 1 0 14",
     table: "M3 4h18v16H3Z M3 10h18 M3 16h18 M9 4v16 M15 4v16",
+    "row-insert-above": "M9 2v6 M6 5h6 M4 12h16 M4 17h16",
+    "row-insert-below": "M4 4h16 M4 9h16 M9 14v6 M6 17h6",
+    "col-insert-left": "M12 4v16 M18 4v16 M5 9v6 M2 12h6",
+    "col-insert-right": "M4 4v16 M10 4v16 M19 9v6 M16 12h6",
     page: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z M14 2v6h6 M9 13h6 M9 17h6",
     link: "M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1.5 1.5 M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1.5-1.5",
     move: "M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z M10 13h7 M14.5 9.5 18 13l-3.5 3.5",
@@ -65,6 +69,19 @@
       <circle cx="9" cy="18" r="1.6" />
       <circle cx="15" cy="18" r="1.6" />
     </g>
+  {:else if name === "grip4"}
+    <g fill="currentColor" stroke="none">
+      <circle cx="9" cy="9" r="1.6" />
+      <circle cx="15" cy="9" r="1.6" />
+      <circle cx="9" cy="15" r="1.6" />
+      <circle cx="15" cy="15" r="1.6" />
+    </g>
+  {:else if name === "toggle"}
+    <!-- Same equilateral triangle as the toggle block's own disclosure
+         icon (see .toggle-icon in Editor.svelte) — unified so the format
+         icon shown on hover and the actual collapse control read as the
+         same shape. -->
+    <polygon points="8,5 8,19 20,12" fill="currentColor" stroke="none" />
   {:else if name === "h1" || name === "h2" || name === "h3" || name === "h4" || name === "h5" || name === "h6"}
     <text
       x="12"

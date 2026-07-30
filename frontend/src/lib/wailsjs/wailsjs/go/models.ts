@@ -23,6 +23,13 @@ export namespace main {
 	    activeTabPath: string;
 	    language: string;
 	    outlineAutoNumber: boolean;
+	    syncEnabled: boolean;
+	    syncURL: string;
+	    syncUsername: string;
+	    syncPassword: string;
+	    syncIntervalMinutes: number;
+	    lastSyncTime: string;
+	    lastSyncError: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -36,6 +43,53 @@ export namespace main {
 	        this.activeTabPath = source["activeTabPath"];
 	        this.language = source["language"];
 	        this.outlineAutoNumber = source["outlineAutoNumber"];
+	        this.syncEnabled = source["syncEnabled"];
+	        this.syncURL = source["syncURL"];
+	        this.syncUsername = source["syncUsername"];
+	        this.syncPassword = source["syncPassword"];
+	        this.syncIntervalMinutes = source["syncIntervalMinutes"];
+	        this.lastSyncTime = source["lastSyncTime"];
+	        this.lastSyncError = source["lastSyncError"];
+	    }
+	}
+	export class SyncResult {
+	    success: boolean;
+	    message: string;
+	    filesSynced: number;
+	    errors: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SyncResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.success = source["success"];
+	        this.message = source["message"];
+	        this.filesSynced = source["filesSynced"];
+	        this.errors = source["errors"];
+	    }
+	}
+	export class SyncStatus {
+	    enabled: boolean;
+	    configured: boolean;
+	    syncing: boolean;
+	    lastSyncTime: string;
+	    lastError: string;
+	    filesSynced: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SyncStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.configured = source["configured"];
+	        this.syncing = source["syncing"];
+	        this.lastSyncTime = source["lastSyncTime"];
+	        this.lastError = source["lastError"];
+	        this.filesSynced = source["filesSynced"];
 	    }
 	}
 

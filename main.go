@@ -69,6 +69,17 @@ func main() {
 		BackgroundColour: &options.RGBA{R: 255, G: 255, B: 255, A: 1},
 		OnStartup:        app.startup,
 		OnBeforeClose:    app.onBeforeClose,
+		// Wails calls PutAreDefaultContextMenusEnabled(false) on WebView2 for
+		// any non-debug production build, which — per WebView2's own
+		// behavior, not just its native right-click menu — also stops the
+		// page's own DOM "contextmenu" event from firing at all. That
+		// silently broke the table's right-click header menu (Editor.svelte,
+		// onRowGripContextMenu) in the packaged .exe even though it worked
+		// fine under `wails dev`/a plain browser. Newer Wails only shows its
+		// *native* menu for text-selection contexts by default, so this
+		// doesn't bring back a stray browser-style right-click menu
+		// elsewhere in the app.
+		EnableDefaultContextMenu: true,
 		Bind: []interface{}{
 			app,
 		},

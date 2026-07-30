@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -19,6 +20,10 @@ type App struct {
 	// (double-click / "打开方式" file association). GetInitialFile hands it
 	// to the frontend once, on first load.
 	initialFile string
+	// syncCancel stops the background cloud-sync loop (sync.go's
+	// runSyncLoop) — cancelled from onBeforeClose so it isn't left running
+	// mid-cycle past the point the rest of the app has torn down.
+	syncCancel context.CancelFunc
 }
 
 func NewApp() *App {
@@ -27,6 +32,9 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	syncCtx, cancel := context.WithCancel(ctx)
+	a.syncCancel = cancel
+	go a.runSyncLoop(syncCtx)
 }
 
 // GetInitialFile returns (and clears) the file this process launched with,
@@ -187,6 +195,9 @@ func (a *App) MigrateRootDir() (Settings, error) {
 // wiring) instead of always reopening at the default size. Never prevents
 // the close.
 func (a *App) onBeforeClose(ctx context.Context) bool {
+	if a.syncCancel != nil {
+		a.syncCancel()
+	}
 	s, err := loadSettings()
 	if err == nil {
 		s.WindowMaximized = runtime.WindowIsMaximised(ctx)
@@ -286,4 +297,18 @@ func (a *App) OpenWithDefaultApp(path string) error {
 // runtime.BrowserOpenURL uses a proper OS-level browser launch instead.
 func (a *App) OpenURL(url string) {
 	runtime.BrowserOpenURL(a.ctx, url)
+}
+
+// RevealInExplorer opens Windows Explorer with path pre-selected — the tab
+// bar's "在文件管理器中打开" context menu item. explorer.exe has its own
+// nonstandard command-line parser: the working incantation is the whole
+// "/select,<path>" as a single argument (not "/select," and the path as two
+// args, and not a quoted path nested inside it) — Go's exec still quotes
+// that single argument as one unit if it contains spaces, which is exactly
+// what explorer expects. explorer.exe also always exits nonzero even on
+// success, so the exit status is never checked — only whether it could be
+// started at all.
+func (a *App) RevealInExplorer(path string) error {
+	cmd := exec.Command("explorer.exe", "/select,"+path)
+	return cmd.Start()
 }

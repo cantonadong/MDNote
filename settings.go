@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -38,6 +39,21 @@ type Settings struct {
 	// OutlineAutoNumber toggles sibling sequence numbers (1./2./3.) on
 	// same-level headings in the right-hand outline panel. Default off.
 	OutlineAutoNumber bool `json:"outlineAutoNumber"`
+	// Cloud sync (InfiniCloud via WebDAV) — see sync.go. Stored in plaintext
+	// like everything else in this file (it's a deliberately portable,
+	// hand-editable INI next to the exe, no registry/DPAPI use), so
+	// SyncPassword (an InfiniCloud "app password", not the account
+	// password) is only as protected as this file itself.
+	SyncEnabled         bool   `json:"syncEnabled"`
+	SyncURL             string `json:"syncURL"`
+	SyncUsername        string `json:"syncUsername"`
+	SyncPassword        string `json:"syncPassword"`
+	SyncIntervalMinutes int    `json:"syncIntervalMinutes"`
+	// LastSyncTime/LastSyncError record the most recent sync attempt's
+	// outcome (RFC3339 UTC / empty-if-ok) so the status bar has something to
+	// show immediately on launch, before the next sync cycle runs.
+	LastSyncTime  string `json:"lastSyncTime"`
+	LastSyncError string `json:"lastSyncError"`
 }
 
 func settingsPath() (string, error) {
@@ -88,6 +104,22 @@ func loadSettings() (Settings, error) {
 			s.Language = strings.TrimSpace(value)
 		case "OutlineAutoNumber":
 			s.OutlineAutoNumber = strings.TrimSpace(value) == "true"
+		case "SyncEnabled":
+			s.SyncEnabled = strings.TrimSpace(value) == "true"
+		case "SyncURL":
+			s.SyncURL = strings.TrimSpace(value)
+		case "SyncUsername":
+			s.SyncUsername = strings.TrimSpace(value)
+		case "SyncPassword":
+			s.SyncPassword = strings.TrimSpace(value)
+		case "SyncIntervalMinutes":
+			if n, err := strconv.Atoi(strings.TrimSpace(value)); err == nil {
+				s.SyncIntervalMinutes = n
+			}
+		case "LastSyncTime":
+			s.LastSyncTime = strings.TrimSpace(value)
+		case "LastSyncError":
+			s.LastSyncError = strings.TrimSpace(value)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -113,5 +145,24 @@ func saveSettings(s Settings) error {
 		fmt.Fprintf(&b, "Language=%s\n", s.Language)
 	}
 	fmt.Fprintf(&b, "OutlineAutoNumber=%t\n", s.OutlineAutoNumber)
+	fmt.Fprintf(&b, "SyncEnabled=%t\n", s.SyncEnabled)
+	if s.SyncURL != "" {
+		fmt.Fprintf(&b, "SyncURL=%s\n", s.SyncURL)
+	}
+	if s.SyncUsername != "" {
+		fmt.Fprintf(&b, "SyncUsername=%s\n", s.SyncUsername)
+	}
+	if s.SyncPassword != "" {
+		fmt.Fprintf(&b, "SyncPassword=%s\n", s.SyncPassword)
+	}
+	if s.SyncIntervalMinutes > 0 {
+		fmt.Fprintf(&b, "SyncIntervalMinutes=%d\n", s.SyncIntervalMinutes)
+	}
+	if s.LastSyncTime != "" {
+		fmt.Fprintf(&b, "LastSyncTime=%s\n", s.LastSyncTime)
+	}
+	if s.LastSyncError != "" {
+		fmt.Fprintf(&b, "LastSyncError=%s\n", s.LastSyncError)
+	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }

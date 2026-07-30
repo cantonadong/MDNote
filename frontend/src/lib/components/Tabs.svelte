@@ -3,6 +3,7 @@
   import Icon from "./Icon.svelte";
   import { appState, stripMdExt, type Tab } from "$lib/appState.svelte";
   import { t } from "$lib/i18n.svelte";
+  import { api } from "$lib/api";
 
   let scrollEl: HTMLDivElement;
   let draggingId: string | null = $state(null);
@@ -12,6 +13,46 @@
   let renamingId: string | null = $state(null);
   let renameValue = $state("");
   let renameInputEl: HTMLInputElement = $state()!;
+
+  let menuTab: Tab | null = $state(null);
+  let menuPos = $state({ x: 0, y: 0 });
+
+  function openMenu(e: MouseEvent, tab: Tab) {
+    e.preventDefault();
+    e.stopPropagation();
+    menuPos = { x: e.clientX, y: e.clientY };
+    menuTab = tab;
+  }
+
+  function closeMenu() {
+    menuTab = null;
+  }
+
+  function menuClose(tab: Tab) {
+    closeMenu();
+    appState.requestCloseTab(tab.id);
+  }
+
+  function menuCloseOthers(tab: Tab) {
+    closeMenu();
+    appState.closeOtherTabs(tab.id);
+  }
+
+  function menuCloseToRight(tab: Tab) {
+    closeMenu();
+    appState.closeTabsToSide(tab.id, "right");
+  }
+
+  function menuCloseToLeft(tab: Tab) {
+    closeMenu();
+    appState.closeTabsToSide(tab.id, "left");
+  }
+
+  function menuRevealInExplorer(tab: Tab) {
+    closeMenu();
+    if (!tab.path) return;
+    api.revealInExplorer(tab.path).catch((e) => appState.showToast(`${t("toast.openFailed")}: ${e}`));
+  }
 
   function select(tab: Tab) {
     appState.activateTab(tab.id);
@@ -124,7 +165,14 @@
   function cancelRename() {
     renamingId = null;
   }
+
+  let menuTabIndex = $derived(menuTab ? appState.tabs.findIndex((t) => t.id === menuTab!.id) : -1);
+  let menuHasLeft = $derived(menuTabIndex > 0);
+  let menuHasRight = $derived(menuTabIndex !== -1 && menuTabIndex < appState.tabs.length - 1);
+  let menuHasOthers = $derived(appState.tabs.length > 1);
 </script>
+
+<svelte:window onclick={menuTab ? closeMenu : undefined} />
 
 <div class="tabs">
   <div class="tabs-scroll" bind:this={scrollEl} onwheel={onWheel}>
@@ -140,6 +188,7 @@
         ondragover={(e) => onDragOverTab(e, tab)}
         ondrop={(e) => onDropTab(e, tab)}
         ondragend={onDragEnd}
+        oncontextmenu={(e) => openMenu(e, tab)}
         title={tab.path ?? tab.title}
         role="presentation"
       >
@@ -205,6 +254,20 @@
     <Icon name="plus" size={15} />
   </button>
 </div>
+
+{#if menuTab}
+  <div class="context-menu" style={`left:${menuPos.x}px; top:${menuPos.y}px`}>
+    <button onclick={() => menuClose(menuTab!)}><Icon name="close" size={14} /> {t("tabs.close")}</button>
+    <div class="menu-sep"></div>
+    <button disabled={!menuHasOthers} onclick={() => menuCloseOthers(menuTab!)}>{t("tabs.closeOthers")}</button>
+    <button disabled={!menuHasRight} onclick={() => menuCloseToRight(menuTab!)}>{t("tabs.closeToRight")}</button>
+    <button disabled={!menuHasLeft} onclick={() => menuCloseToLeft(menuTab!)}>{t("tabs.closeToLeft")}</button>
+    <div class="menu-sep"></div>
+    <button disabled={!menuTab.path} onclick={() => menuRevealInExplorer(menuTab!)}>
+      <Icon name="folder" size={14} /> {t("tabs.revealInExplorer")}
+    </button>
+  </div>
+{/if}
 
 <style>
   .tabs {
@@ -337,5 +400,43 @@
   .new-tab-btn:hover {
     background: var(--hover-bg);
     color: var(--text-primary);
+  }
+  .context-menu {
+    position: fixed;
+    z-index: 1000;
+    background: var(--content-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+    padding: 4px;
+    min-width: 170px;
+    display: flex;
+    flex-direction: column;
+  }
+  .context-menu button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border: none;
+    background: none;
+    text-align: left;
+    font-size: 13px;
+    border-radius: 5px;
+    cursor: pointer;
+    color: var(--text-primary);
+  }
+  .context-menu button:hover:not(:disabled) {
+    background: var(--hover-bg);
+  }
+  .context-menu button:disabled {
+    color: var(--text-secondary);
+    opacity: 0.5;
+    cursor: default;
+  }
+  .menu-sep {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 2px;
   }
 </style>

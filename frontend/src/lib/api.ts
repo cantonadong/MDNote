@@ -15,6 +15,29 @@ export interface Settings {
   activeTabPath: string;
   language: string;
   outlineAutoNumber: boolean;
+  syncEnabled: boolean;
+  syncURL: string;
+  syncUsername: string;
+  syncPassword: string;
+  syncIntervalMinutes: number;
+  lastSyncTime: string;
+  lastSyncError: string;
+}
+
+export interface SyncStatus {
+  enabled: boolean;
+  configured: boolean;
+  syncing: boolean;
+  lastSyncTime: string;
+  lastError: string;
+  filesSynced: number;
+}
+
+export interface SyncResult {
+  success: boolean;
+  message: string;
+  filesSynced: number;
+  errors: string[] | null;
 }
 
 function goApp(): any {
@@ -55,6 +78,7 @@ export const api = {
   basename: (path: string): Promise<string> => goApp().Basename(path),
   fileExists: (path: string): Promise<boolean> => goApp().FileExists(path),
   openWithDefaultApp: (path: string): Promise<void> => goApp().OpenWithDefaultApp(path),
+  revealInExplorer: (path: string): Promise<void> => goApp().RevealInExplorer(path),
   openURL: (url: string): void => {
     goApp().OpenURL(url);
   },
@@ -74,4 +98,18 @@ export const api = {
   resolveLinkID: (id: string): Promise<string> => goApp().ResolveLinkID(id),
   saveAppSettings: (language: string, outlineAutoNumber: boolean): Promise<Settings> =>
     goApp().SaveAppSettings(language, outlineAutoNumber),
+  saveSyncSettings: (
+    enabled: boolean,
+    url: string,
+    username: string,
+    password: string,
+    intervalMinutes: number,
+  ): Promise<Settings> => goApp().SaveSyncSettings(enabled, url, username, password, intervalMinutes),
+  testSyncConnection: (url: string, username: string, password: string): Promise<string> =>
+    goApp().TestSyncConnection(url, username, password),
+  syncNow: (): Promise<SyncResult> => goApp().SyncNow(),
+  getSyncStatus: (): Promise<SyncStatus> => goApp().GetSyncStatus(),
+  onSyncStatus: (handler: (status: SyncStatus) => void): void => {
+    (window as any).runtime?.EventsOn?.("sync-status", handler);
+  },
 };
