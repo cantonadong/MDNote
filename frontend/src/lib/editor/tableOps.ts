@@ -1,5 +1,5 @@
 import type { Editor } from "@tiptap/core";
-import type { Node as PMNode } from "@tiptap/pm/model";
+import type { Node as PMNode, Schema } from "@tiptap/pm/model";
 
 // Row/column add/delete/reorder for the Table extension, implemented by
 // rebuilding the whole table node and replacing it in one step rather than
@@ -43,23 +43,132 @@ function replaceTable(editor: Editor, ref: TableRef, rows: PMNode[]) {
   view.dispatch(state.tr.replaceWith(ref.pos, ref.pos + ref.node.nodeSize, newTable));
 }
 
+export function setTableHeaderAttrs(
+  editor: Editor,
+  ref: TableRef,
+  attrs: Partial<{ showHeaderRow: boolean; showHeaderColumn: boolean }>,
+) {
+  editor.view.dispatch(editor.state.tr.setNodeMarkup(ref.pos, undefined, { ...ref.node.attrs, ...attrs }));
+}
+
+// Row 0 is always a real tableHeader node regardless of the showHeaderRow
+// display toggle (see editor/nodes/table.ts) — GFM serialization and
+// isPlainGfmTable() both depend on that. Inserting a row above index 0 or
+// deleting index 0 changes which row that is, so the cell kind has to be
+// swapped along with it to keep the invariant true.
+function retypeRow(row: PMNode, schema: Schema, kind: "tableHeader" | "tableCell"): PMNode {
+  const targetType = schema.nodes[kind];
+  const cells: PMNode[] = [];
+  row.forEach((cell) => {
+    cells.push(cell.type.name === kind ? cell : targetType.create(cell.attrs, cell.content, cell.marks));
+  });
+  return row.type.create(row.attrs, cells, row.marks);
+}
+
+function isCellEmpty(cell: PMNode): boolean {
+  if (cell.textContent.trim().length > 0) return false;
+  let hasAtom = false;
+  cell.descendants((child) => {
+    if (child.isAtom && !child.isText) hasAtom = true;
+  });
+  return !hasAtom;
+}
+
+function isRowEmpty(row: PMNode): boolean {
+  for (let c = 0; c < row.childCount; c++) if (!isCellEmpty(row.child(c))) return false;
+  return true;
+}
+
+function isColumnEmpty(table: PMNode, colIndex: number): boolean {
+  for (let r = 0; r < table.childCount; r++) {
+    const cell = table.child(r).child(colIndex);
+    if (cell && !isCellEmpty(cell)) return false;
+  }
+  return true;
+}
+
+// How many rows/columns, counting back from the last one, can be dropped
+// without discarding real content — used both to cap the add-row/add-col
+// button's remove-drag preview and to clamp the actual removal below, so a
+// user can only shrink a table back down through cells they already
+// emptied out (undo-able content loss, never silent data loss).
+export function trailingEmptyRowCount(table: PMNode): number {
+  const rows = rowsOf(table);
+  let n = 0;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (!isRowEmpty(rows[i])) break;
+    n++;
+  }
+  return n;
+}
+
+export function trailingEmptyColumnCount(table: PMNode): number {
+  const cols = colCount(table);
+  let n = 0;
+  for (let c = cols - 1; c >= 0; c--) {
+    if (!isColumnEmpty(table, c)) break;
+    n++;
+  }
+  return n;
+}
+
 export function addRow(editor: Editor, ref: TableRef, atIndex: number) {
   const { schema } = editor.state;
   const cols = colCount(ref.node);
+  const rows = rowsOf(ref.node);
+  // Inserting above the current row 0 pushes it down to row 1, so it has to
+  // stop being the header row — and the new row takes over that spot instead.
+  const insertingHeader = atIndex === 0 && rows.length > 0;
+  const kind = insertingHeader ? schema.nodes.tableHeader : schema.nodes.tableCell;
   const cells: PMNode[] = [];
   for (let c = 0; c < cols; c++) {
-    const cell = schema.nodes.tableCell.createAndFill();
+    const cell = kind.createAndFill();
     if (cell) cells.push(cell);
   }
   const newRow = schema.nodes.tableRow.create(null, cells);
-  const rows = rowsOf(ref.node);
+  if (insertingHeader) rows[0] = retypeRow(rows[0], schema, "tableCell");
   rows.splice(atIndex, 0, newRow);
   replaceTable(editor, ref, rows);
 }
 
+// Deletes a specific row outright (no "must already be empty" restriction —
+// unlike removeRows below, this backs an explicit menu action, not a drag
+// gesture that could delete content by accident). Keeps at least one row,
+// and re-promotes the new row 0 to a header row if the old one was removed.
 export function deleteRow(editor: Editor, ref: TableRef, index: number) {
-  if (rowCount(ref.node) <= 1) return;
-  const rows = rowsOf(ref.node).filter((_, i) => i !== index);
+  const rows = rowsOf(ref.node);
+  if (rows.length <= 1) return;
+  rows.splice(index, 1);
+  if (index === 0) rows[0] = retypeRow(rows[0], editor.state.schema, "tableHeader");
+  replaceTable(editor, ref, rows);
+}
+
+// Batch versions for the add-row button's drag gesture — inserting/removing
+// several rows for one pointer-drag-then-release needs to land as a single
+// transaction (one replaceTable call) so it's also one undo step, not N.
+export function addRows(editor: Editor, ref: TableRef, atIndex: number, count: number) {
+  if (count <= 0) return;
+  const { schema } = editor.state;
+  const cols = colCount(ref.node);
+  const rows = rowsOf(ref.node);
+  const newRows: PMNode[] = [];
+  for (let i = 0; i < count; i++) {
+    const cells: PMNode[] = [];
+    for (let c = 0; c < cols; c++) {
+      const cell = schema.nodes.tableCell.createAndFill();
+      if (cell) cells.push(cell);
+    }
+    newRows.push(schema.nodes.tableRow.create(null, cells));
+  }
+  rows.splice(atIndex, 0, ...newRows);
+  replaceTable(editor, ref, rows);
+}
+
+export function removeRows(editor: Editor, ref: TableRef, fromIndex: number, count: number) {
+  const rows = rowsOf(ref.node);
+  const removable = Math.min(count, rows.length - 1, rows.length - fromIndex, trailingEmptyRowCount(ref.node));
+  if (removable <= 0) return;
+  rows.splice(fromIndex, removable);
   replaceTable(editor, ref, rows);
 }
 
@@ -87,11 +196,45 @@ export function addColumn(editor: Editor, ref: TableRef, atIndex: number) {
   replaceTable(editor, ref, rows);
 }
 
+// Batch versions for the add-column button's drag gesture — see addRows/
+// removeRows above for why this needs to be one transaction, not N.
+export function addColumns(editor: Editor, ref: TableRef, atIndex: number, count: number) {
+  if (count <= 0) return;
+  const { schema } = editor.state;
+  const rows = rowsOf(ref.node).map((row) => {
+    const cells: PMNode[] = [];
+    for (let c = 0; c < row.childCount; c++) cells.push(row.child(c));
+    const kind = row.child(0)?.type.name === "tableHeader" ? schema.nodes.tableHeader : schema.nodes.tableCell;
+    const newCells: PMNode[] = [];
+    for (let i = 0; i < count; i++) {
+      const cell = kind.createAndFill();
+      if (cell) newCells.push(cell);
+    }
+    cells.splice(atIndex, 0, ...newCells);
+    return row.type.create(row.attrs, cells, row.marks);
+  });
+  replaceTable(editor, ref, rows);
+}
+
+// Explicit "delete this column" menu action — see deleteRow above for why
+// this isn't restricted to already-empty columns the way removeColumns is.
 export function deleteColumn(editor: Editor, ref: TableRef, index: number) {
   if (colCount(ref.node) <= 1) return;
   const rows = rowsOf(ref.node).map((row) => {
     const cells: PMNode[] = [];
     for (let c = 0; c < row.childCount; c++) if (c !== index) cells.push(row.child(c));
+    return row.type.create(row.attrs, cells, row.marks);
+  });
+  replaceTable(editor, ref, rows);
+}
+
+export function removeColumns(editor: Editor, ref: TableRef, fromIndex: number, count: number) {
+  const total = colCount(ref.node);
+  const removable = Math.min(count, total - 1, total - fromIndex, trailingEmptyColumnCount(ref.node));
+  if (removable <= 0) return;
+  const rows = rowsOf(ref.node).map((row) => {
+    const cells: PMNode[] = [];
+    for (let c = 0; c < row.childCount; c++) if (c < fromIndex || c >= fromIndex + removable) cells.push(row.child(c));
     return row.type.create(row.attrs, cells, row.marks);
   });
   replaceTable(editor, ref, rows);

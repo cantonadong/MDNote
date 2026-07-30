@@ -1,5 +1,7 @@
 import { Node, mergeAttributes, Extension, getMarkRange } from "@tiptap/core";
-import { Plugin } from "@tiptap/pm/state";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
+import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { appState } from "../../appState.svelte";
 import { api } from "../../api";
 import { t } from "../../i18n.svelte";
@@ -70,6 +72,9 @@ function linkChipNode(name: string, dataType: string, glyph: string, stripExt: b
       const path = node.attrs.path as string | null;
       let label = path ? basenameOf(path) : "(未命名)";
       if (stripExt) label = label.replace(/\.md$/i, "");
+      // Icon split into its own element (rather than one plain text node
+      // with the glyph and label concatenated) purely so the "broken link"
+      // CSS below has something to swap out — see .link-chip-invalid.
       return [
         "a",
         mergeAttributes(HTMLAttributes, {
@@ -78,7 +83,8 @@ function linkChipNode(name: string, dataType: string, glyph: string, stripExt: b
           class: "link-chip",
           title: path ?? "",
         }),
-        `${glyph} ${label}`,
+        ["span", { class: "link-chip-icon" }, glyph],
+        `${label}`,
       ];
     },
   });
@@ -87,12 +93,65 @@ function linkChipNode(name: string, dataType: string, glyph: string, stripExt: b
 export const PageLink = linkChipNode("pageLink", "page-link", "\u{1F4C4}", true);
 export const FileLink = linkChipNode("fileLink", "file-link", "\u{1F4CE}", false);
 
+// Tracks which link targets (keyed by id, or by path for id-less legacy
+// chips) have been confirmed missing by an actual click — deliberately not
+// a node attribute, so this never round-trips into the saved markdown: only
+// a click can prove a target is gone, so reopening a file must always start
+// with every chip in its normal state, not whatever was last known. A plain
+// decoration keyed off live doc content (recomputed on every transaction,
+// same as searchHighlight.ts) means every chip pointing at the same target
+// reflects one click's result, and moving/editing the doc can't leave a
+// decoration stuck on a stale position.
+interface InvalidLinksState {
+  invalid: Set<string>;
+  decorations: DecorationSet;
+}
+
+const invalidLinksKey = new PluginKey<InvalidLinksState>("invalidLinks");
+
+function linkKey(node: ProseMirrorNode): string | null {
+  return (node.attrs.id as string | null) || (node.attrs.path as string | null);
+}
+
+function buildInvalidLinkDecorations(doc: ProseMirrorNode, invalid: Set<string>): DecorationSet {
+  if (invalid.size === 0) return DecorationSet.empty;
+  const decos: Decoration[] = [];
+  doc.descendants((node, pos) => {
+    if (node.type.name !== "pageLink" && node.type.name !== "fileLink") return;
+    const key = linkKey(node);
+    if (key && invalid.has(key)) {
+      decos.push(Decoration.node(pos, pos + node.nodeSize, { class: "link-chip-invalid" }));
+    }
+  });
+  return DecorationSet.create(doc, decos);
+}
+
 export const LinkClickHandler = Extension.create({
   name: "linkClickHandler",
   addProseMirrorPlugins() {
     return [
       new Plugin({
+        key: invalidLinksKey,
+        state: {
+          init: (): InvalidLinksState => ({ invalid: new Set(), decorations: DecorationSet.empty }),
+          apply(tr, prev): InvalidLinksState {
+            const meta = tr.getMeta(invalidLinksKey) as { key: string; invalid: boolean } | undefined;
+            let invalid = prev.invalid;
+            if (meta) {
+              invalid = new Set(invalid);
+              if (meta.invalid) invalid.add(meta.key);
+              else invalid.delete(meta.key);
+            }
+            if (meta || tr.docChanged) {
+              return { invalid, decorations: buildInvalidLinkDecorations(tr.doc, invalid) };
+            }
+            return prev;
+          },
+        },
         props: {
+          decorations(state) {
+            return invalidLinksKey.getState(state)?.decorations;
+          },
           handleClickOn(view, _pos, node, nodePos, event) {
             const path = node.attrs.path as string | null | undefined;
             const id = node.attrs.id as string | null | undefined;
@@ -129,6 +188,12 @@ export const LinkClickHandler = Extension.create({
               // message instead of whatever raw error readFile/ShellExecute
               // happens to surface.
               const exists = await api.fileExists(targetPath).catch(() => true);
+              // Marks every chip pointing at this same target (by id, or by
+              // path once resolved above) as broken/healthy — only ever
+              // written here, right after an actual click proves the
+              // current state, never assumed up front.
+              const key = id || targetPath;
+              view.dispatch(view.state.tr.setMeta(invalidLinksKey, { key, invalid: !exists }));
               if (!exists) {
                 appState.showToast(t("toast.fileNotFound"));
                 return;

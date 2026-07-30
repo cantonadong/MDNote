@@ -1,4 +1,4 @@
-import { api, type Settings } from "./api";
+import { api, type Settings, type SyncStatus } from "./api";
 import type { OutlineItem } from "./editor/outline";
 import { editorBridge } from "./editor/bridge.svelte";
 import { i18n, t, type LanguageSetting } from "./i18n.svelte";
@@ -16,6 +16,10 @@ export interface Tab {
 export interface PendingClose {
   tabId: string;
   missing?: boolean;
+  // Remaining tab ids still waiting to be closed in a bulk close (close
+  // others/left/right) — only one confirm dialog can be pending at a time,
+  // so a batch works through this queue one tab per dialog resolution.
+  queue?: string[];
 }
 
 export interface SelectedEntry {
@@ -79,6 +83,24 @@ class AppState {
     activeTabPath: "",
     language: "system",
     outlineAutoNumber: false,
+    syncEnabled: false,
+    syncURL: "",
+    syncUsername: "",
+    syncPassword: "",
+    syncIntervalMinutes: 30,
+    lastSyncTime: "",
+    lastSyncError: "",
+  });
+  // Live cloud-sync status for the status bar — seeded from GetSyncStatus
+  // at startup, then kept current via the "sync-status" event the Go side
+  // emits on every background-ticker or manual sync run (see sync.go).
+  syncStatus = $state<SyncStatus>({
+    enabled: false,
+    configured: false,
+    syncing: false,
+    lastSyncTime: "",
+    lastError: "",
+    filesSynced: 0,
   });
   // The settings page renders as its own pseudo-tab in the tab bar rather
   // than a file — settingsOpen is whether that tab exists at all,
@@ -130,6 +152,10 @@ class AppState {
     this.settings = await api.getSettings();
     i18n.setLanguage((this.settings.language as LanguageSetting) || "system");
     const initialFile = await api.getInitialFile();
+    this.syncStatus = await api.getSyncStatus();
+    api.onSyncStatus((status) => {
+      this.syncStatus = status;
+    });
 
     // Restore whatever was open last session — silently skipping any file
     // that's since been deleted/moved rather than surfacing an error toast
@@ -155,11 +181,14 @@ class AppState {
     api.onOpenFile((path) => {
       void this.openPath(path);
     });
-    // Dragging .md file(s) from Explorer onto the window opens each as a tab
-    // instead of WebView2's default "navigate to file://" behavior.
+    // Dragging .md/.txt file(s) from Explorer onto the window opens each as
+    // a tab instead of WebView2's default "navigate to file://" behavior —
+    // landing right after whatever tab is currently active (and switching
+    // to it) rather than tacked onto the far end of the tab strip, since a
+    // drop is a deliberate "open this next to what I'm looking at" gesture.
     api.onFileDrop((paths) => {
       for (const p of paths) {
-        if (/\.md$/i.test(p)) void this.openPath(p);
+        if (/\.(md|txt)$/i.test(p)) void this.openPath(p, { insertAfterActive: true });
       }
     });
   }
@@ -267,7 +296,12 @@ class AppState {
   // error toast, it should just be skipped (see appState.init()). A
   // deliberate open elsewhere (sidebar click, Open dialog, a link jump)
   // still surfaces the normal failure toast.
-  async openPath(path: string, opts: { silent?: boolean } = {}) {
+  // insertAfterActive: places the new tab immediately to the right of
+  // whatever's currently active instead of at the far end of the tab strip
+  // — used for the drag-and-drop-from-Explorer path, where "open this next
+  // to what I'm looking at" is the more deliberate, expected placement than
+  // wherever the tab strip happens to end.
+  async openPath(path: string, opts: { silent?: boolean; insertAfterActive?: boolean } = {}) {
     const existing = this.findTabByPath(path);
     if (existing) {
       this.activeTabId = existing.id;
@@ -286,7 +320,12 @@ class AppState {
         savedContent: content,
         missing: false,
       };
-      this.tabs.push(tab);
+      if (opts.insertAfterActive) {
+        const activeIdx = this.tabs.findIndex((t) => t.id === this.activeTabId);
+        this.tabs.splice(activeIdx === -1 ? this.tabs.length : activeIdx + 1, 0, tab);
+      } else {
+        this.tabs.push(tab);
+      }
       this.activeTabId = tab.id;
       if (staleTabId) this.closeTabImmediately(staleTabId);
       this.persistOpenTabs();
@@ -378,16 +417,40 @@ class AppState {
   }
 
   async requestCloseTab(tabId: string) {
+    await this.requestCloseTabs([tabId]);
+  }
+
+  // Closes tabs one at a time, in order; a dirty/missing tab pauses the
+  // batch on pendingClose (same single-dialog flow as a lone close) and
+  // resolvePendingClose picks the queue back up once the user answers.
+  async requestCloseTabs(tabIds: string[]) {
+    const [tabId, ...queue] = tabIds;
+    if (tabId === undefined) return;
     const tab = this.tabs.find((t) => t.id === tabId);
-    if (!tab) return;
+    if (!tab) {
+      await this.requestCloseTabs(queue);
+      return;
+    }
     await this.checkMissing(tab);
     if (tab.missing) {
-      this.pendingClose = { tabId, missing: true };
+      this.pendingClose = { tabId, missing: true, queue };
     } else if (isDirty(tab)) {
-      this.pendingClose = { tabId };
+      this.pendingClose = { tabId, queue };
     } else {
       this.closeTabImmediately(tabId);
+      await this.requestCloseTabs(queue);
     }
+  }
+
+  closeOtherTabs(keepId: string) {
+    void this.requestCloseTabs(this.tabs.filter((t) => t.id !== keepId).map((t) => t.id));
+  }
+
+  closeTabsToSide(tabId: string, side: "left" | "right") {
+    const idx = this.tabs.findIndex((t) => t.id === tabId);
+    if (idx === -1) return;
+    const ids = (side === "left" ? this.tabs.slice(0, idx) : this.tabs.slice(idx + 1)).map((t) => t.id);
+    void this.requestCloseTabs(ids);
   }
 
   reorderTab(fromId: string, toId: string) {
@@ -431,16 +494,22 @@ class AppState {
   async resolvePendingClose(choice: "save" | "discard" | "cancel") {
     const pending = this.pendingClose;
     this.pendingClose = null;
-    if (!pending || choice === "cancel") return;
+    if (!pending) return;
+    // Cancel aborts the whole batch, not just this one tab — continuing to
+    // close the rest after the user explicitly said "stop" would surprise
+    // them more than leaving the remaining tabs open.
+    if (choice === "cancel") return;
     const tab = this.tabs.find((t) => t.id === pending.tabId);
-    if (!tab) return;
-    if (choice === "save") {
-      // A missing-file tab always goes through "另存为": its old path may
-      // no longer be a place the user wants to recreate the file at.
-      const ok = pending.missing ? await this.saveTabAs(tab) : await this.saveTab(tab);
-      if (!ok) return;
+    if (tab) {
+      if (choice === "save") {
+        // A missing-file tab always goes through "另存为": its old path may
+        // no longer be a place the user wants to recreate the file at.
+        const ok = pending.missing ? await this.saveTabAs(tab) : await this.saveTab(tab);
+        if (!ok) return;
+      }
+      this.closeTabImmediately(pending.tabId);
     }
-    this.closeTabImmediately(pending.tabId);
+    if (pending.queue?.length) await this.requestCloseTabs(pending.queue);
   }
 
   // -- Slash-menu / block-handle async helpers (file link / new page) --
@@ -721,6 +790,38 @@ class AppState {
       i18n.setLanguage(language);
     } catch (e) {
       this.showToast(`${t("toast.saveSettingsFailed")}: ${e}`);
+    }
+  }
+
+  async saveSyncSettings(
+    enabled: boolean,
+    url: string,
+    username: string,
+    password: string,
+    intervalMinutes: number,
+  ): Promise<boolean> {
+    try {
+      this.settings = await api.saveSyncSettings(enabled, url, username, password, intervalMinutes);
+      this.syncStatus = await api.getSyncStatus();
+      return true;
+    } catch (e) {
+      this.showToast(`${t("toast.saveSettingsFailed")}: ${e}`);
+      return false;
+    }
+  }
+
+  // Runs a sync immediately (the settings panel's "立即同步" button) and
+  // shows its outcome as a toast — syncStatus itself updates separately via
+  // the "sync-status" event this also triggers, so the status bar reflects
+  // it too without needing this call's result.
+  async syncNow() {
+    try {
+      const result = await api.syncNow();
+      this.showToast(result.success ? t("settings.sync.syncSuccess") : `${t("settings.sync.syncFailed")}: ${result.message}`);
+      return result;
+    } catch (e) {
+      this.showToast(`${t("settings.sync.syncFailed")}: ${e}`);
+      return null;
     }
   }
 }

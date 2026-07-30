@@ -34,6 +34,10 @@ export function GetSettings() {
   return window['go']['main']['App']['GetSettings']();
 }
 
+export function GetSyncStatus() {
+  return window['go']['main']['App']['GetSyncStatus']();
+}
+
 export function ListDir(arg1) {
   return window['go']['main']['App']['ListDir'](arg1);
 }
@@ -74,6 +78,10 @@ export function ResolveLinkID(arg1) {
   return window['go']['main']['App']['ResolveLinkID'](arg1);
 }
 
+export function RevealInExplorer(arg1) {
+  return window['go']['main']['App']['RevealInExplorer'](arg1);
+}
+
 export function SaveAppSettings(arg1, arg2) {
   return window['go']['main']['App']['SaveAppSettings'](arg1, arg2);
 }
@@ -90,8 +98,20 @@ export function SavePdfDialog(arg1, arg2) {
   return window['go']['main']['App']['SavePdfDialog'](arg1, arg2);
 }
 
+export function SaveSyncSettings(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['SaveSyncSettings'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function SelectRootDir() {
   return window['go']['main']['App']['SelectRootDir']();
+}
+
+export function SyncNow() {
+  return window['go']['main']['App']['SyncNow']();
+}
+
+export function TestSyncConnection(arg1, arg2, arg3) {
+  return window['go']['main']['App']['TestSyncConnection'](arg1, arg2, arg3);
 }
 
 export function WriteFile(arg1, arg2) {

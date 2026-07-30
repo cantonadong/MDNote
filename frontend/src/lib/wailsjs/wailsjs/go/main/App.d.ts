@@ -18,6 +18,8 @@ export function GetInitialFile():Promise<string>;
 
 export function GetSettings():Promise<main.Settings>;
 
+export function GetSyncStatus():Promise<main.SyncStatus>;
+
 export function ListDir(arg1:string):Promise<Array<main.FileEntry>>;
 
 export function MigrateRootDir():Promise<main.Settings>;
@@ -38,6 +40,8 @@ export function RenameEntry(arg1:string,arg2:string):Promise<string>;
 
 export function ResolveLinkID(arg1:string):Promise<string>;
 
+export function RevealInExplorer(arg1:string):Promise<void>;
+
 export function SaveAppSettings(arg1:string,arg2:boolean):Promise<main.Settings>;
 
 export function SaveFileDialog(arg1:string,arg2:string):Promise<string>;
@@ -46,6 +50,12 @@ export function SaveOpenTabs(arg1:Array<string>,arg2:string):Promise<void>;
 
 export function SavePdfDialog(arg1:string,arg2:string):Promise<string>;
 
+export function SaveSyncSettings(arg1:boolean,arg2:string,arg3:string,arg4:string,arg5:number):Promise<main.Settings>;
+
 export function SelectRootDir():Promise<main.Settings>;
+
+export function SyncNow():Promise<main.SyncResult>;
+
+export function TestSyncConnection(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function WriteFile(arg1:string,arg2:string):Promise<void>;
