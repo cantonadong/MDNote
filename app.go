@@ -79,17 +79,39 @@ func (a *App) GetSettings() (Settings, error) {
 	return loadSettings()
 }
 
-// SaveAppSettings persists the settings page's two toggles (language,
-// outline auto-numbering) without disturbing the rest of Settings (root
-// dir, open tabs, ...), which is why it loads-then-overwrites just these
-// two fields rather than taking a whole Settings struct from the frontend.
-func (a *App) SaveAppSettings(language string, outlineAutoNumber bool) (Settings, error) {
+// SaveAppSettings persists the settings page's toggles (language, outline
+// auto-numbering, grammar check) without disturbing the rest of Settings
+// (root dir, open tabs, ...), which is why it loads-then-overwrites just
+// these fields rather than taking a whole Settings struct from the frontend.
+func (a *App) SaveAppSettings(language string, outlineAutoNumber bool, grammarCheckEnabled bool) (Settings, error) {
 	s, err := loadSettings()
 	if err != nil {
 		return Settings{}, err
 	}
 	s.Language = language
 	s.OutlineAutoNumber = outlineAutoNumber
+	s.GrammarCheckEnabled = grammarCheckEnabled
+	if err := saveSettings(s); err != nil {
+		return Settings{}, err
+	}
+	return s, nil
+}
+
+// AddDictionaryWord persists one more word to the grammar checker's custom
+// dictionary (see Settings.CustomDictionary) — a no-op if it's already
+// there, since the frontend re-sends the whole current word on every
+// "add to dictionary" click regardless of prior state.
+func (a *App) AddDictionaryWord(word string) (Settings, error) {
+	s, err := loadSettings()
+	if err != nil {
+		return Settings{}, err
+	}
+	for _, w := range s.CustomDictionary {
+		if w == word {
+			return s, nil
+		}
+	}
+	s.CustomDictionary = append(s.CustomDictionary, word)
 	if err := saveSettings(s); err != nil {
 		return Settings{}, err
 	}
@@ -301,14 +323,26 @@ func (a *App) OpenURL(url string) {
 
 // RevealInExplorer opens Windows Explorer with path pre-selected — the tab
 // bar's "在文件管理器中打开" context menu item. explorer.exe has its own
-// nonstandard command-line parser: the working incantation is the whole
-// "/select,<path>" as a single argument (not "/select," and the path as two
-// args, and not a quoted path nested inside it) — Go's exec still quotes
-// that single argument as one unit if it contains spaces, which is exactly
-// what explorer expects. explorer.exe also always exits nonzero even on
-// success, so the exit status is never checked — only whether it could be
-// started at all.
+// nonstandard command-line parser for "/select,<path>": it needs the path
+// portion quoted (/select,"<path>") whenever the path contains a space, but
+// Go's os/exec always re-escapes each argument itself when building the
+// process's actual command line — for an argument that already has an
+// embedded '"' plus spaces, that adds a second, different layer of
+// quoting/escaping than explorer's parser expects, so a path with a space
+// anywhere in it (a folder name, say) silently makes explorer fall back to
+// opening Documents instead of selecting the file, even though the same
+// "/select,\"<path>\"" text typed directly works fine. Confirmed by
+// reproducing both the failure and the fix directly against a real path.
+// Bypassing Go's own escaping via SysProcAttr.CmdLine and building the raw
+// command line ourselves is what actually gets explorer to select the
+// right file. Windows paths can never contain a literal '"', so path
+// itself needs no escaping here. explorer.exe also always exits nonzero
+// even on success, so the exit status is never checked — only whether it
+// could be started at all.
 func (a *App) RevealInExplorer(path string) error {
-	cmd := exec.Command("explorer.exe", "/select,"+path)
+	cmd := exec.Command("explorer.exe")
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CmdLine: `explorer.exe /select,"` + path + `"`,
+	}
 	return cmd.Start()
 }

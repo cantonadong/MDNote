@@ -2,12 +2,14 @@
   import { onMount, onDestroy } from "svelte";
   import { Editor } from "@tiptap/core";
   import { TextSelection } from "@tiptap/pm/state";
-  import { Fragment } from "@tiptap/pm/model";
+  import { Fragment, type Node as PMNode } from "@tiptap/pm/model";
   import StarterKit from "@tiptap/starter-kit";
   import { Markdown } from "tiptap-markdown";
   import { Placeholder } from "@tiptap/extensions";
   import { TaskList } from "@tiptap/extension-task-list";
   import { TaskItem } from "@tiptap/extension-task-item";
+  import { Highlight } from "@tiptap/extension-highlight";
+  import HighlightColorPicker from "./HighlightColorPicker.svelte";
   import { Table } from "$lib/editor/nodes/table";
   import { TableRow } from "@tiptap/extension-table-row";
   import { TableHeader } from "@tiptap/extension-table-header";
@@ -20,13 +22,21 @@
   import { buildOutline } from "$lib/editor/outline";
   import { countWords } from "$lib/wordcount";
   import { SearchHighlight } from "$lib/editor/searchHighlight";
+  import { GrammarCheck, setGrammarCheckEnabled, recomputeGrammarDecorations } from "$lib/editor/grammarCheck";
+  import {
+    peekSpeller,
+    setCustomDictionary,
+    addCustomDictionaryWord,
+    findDictionaryCaseMatch,
+  } from "$lib/editor/grammar/spellCheck";
+  import { WavyUnderline } from "$lib/editor/nodes/wavyUnderline";
+  import { JoinAdjacentLists } from "$lib/editor/nodes/joinAdjacentLists";
   import { ToggleList, ToggleSummary } from "$lib/editor/nodes/toggleList";
   import { Callout } from "$lib/editor/nodes/callout";
   import { Columns, Column } from "$lib/editor/nodes/columns";
   import { PageLink, FileLink, LinkClickHandler } from "$lib/editor/nodes/links";
   import { SlashTrigger } from "$lib/editor/nodes/slashTrigger";
   import { FullwidthHeadingShortcut } from "$lib/editor/nodes/fullwidthShortcuts";
-  import { AutoPairPunctuation } from "$lib/editor/nodes/autoPairPunctuation";
   import { slashMenuState } from "$lib/editor/slashMenu.svelte";
   import {
     type TableRef,
@@ -43,6 +53,10 @@
     addColumns as tableAddColumns,
     removeColumns as tableRemoveColumns,
     deleteColumn as tableDeleteColumn,
+    deleteTable as tableDeleteTable,
+    setShowIndexColumn,
+    setColumnWidths,
+    setPhysicalColumnWidths,
     trailingEmptyRowCount,
     trailingEmptyColumnCount,
     setTableHeaderAttrs,
@@ -60,6 +74,14 @@
 
   let handleTop = $state<number | null>(null);
   let handleHeight = $state(24);
+  // Highlights the block a click on its drag handle (⠿, not the "+" button)
+  // just acted on — a plain click opens either the "change" block-type menu
+  // or, for a table, the table-wide header menu, and the highlight shows the
+  // user exactly what those subsequent clicks apply to. Reuses the same
+  // rgba(35,131,226,0.13) look as multiSelectRects' .row-highlight. Cleared
+  // in the svelte:window onclick below (whatever closes the menus) and the
+  // instant a real drag starts (onDragHandlePointerDown's onMove).
+  let selectedBlockRect = $state<{ top: number; left: number; width: number; height: number } | null>(null);
   // 30x30 reads better than the old fixed 28x28, but only when the hovered
   // row is tall enough to fit it (headings render much taller than plain
   // text, e.g.) — falls back to 28x28 for a normal-height text row rather
@@ -119,6 +141,14 @@
       clearMultiSelect();
       return;
     }
+    if (e.key === "Escape" && highlightPickerOpen) {
+      highlightPickerOpen = false;
+      return;
+    }
+    if (e.key === "Escape" && grammarMenu) {
+      grammarMenu = null;
+      return;
+    }
     if (!e.ctrlKey || e.altKey || e.metaKey) return;
     if (e.code === "Equal" || e.code === "NumpadAdd") {
       e.preventDefault();
@@ -158,12 +188,19 @@
     tableBottom: number;
     tableLeft: number;
     tableRight: number;
+    tableViewportLeft: number;
+    tableViewportRight: number;
+    visibleColCount: number;
     // Container(wrapperEl)-relative rects, in the same "zoomed" pixel space
     // as everything else computed via getBoundingClientRect() in this file
     // (see the editorZoom comment near the top) — divided by zoomScale only
     // at render time in the template.
     rows: { top: number; bottom: number }[];
     cols: { left: number; right: number }[];
+    rowHeights: number[];
+    colWidths: number[];
+    contentColWidths: number[];
+    resizeBoundaries: { x: number; top: number; bottom: number; index: number }[];
   }
   let tableGutter = $state<TableGutter | null>(null);
   // Set while a row/column grip is being dragged; used only to stop
@@ -178,6 +215,10 @@
   // removeRows etc. only ever run once, from the pointerup handler.
   let tableRowAdjust = $state<{ count: number; removing: boolean } | null>(null);
   let tableColAdjust = $state<{ count: number; removing: boolean } | null>(null);
+  let tableDimensionLabel = $state<{ text: string; left: number; top: number } | null>(null);
+  let hoveredTableResizeBoundary = $state<{ x: number; top: number; bottom: number; index: number } | null>(null);
+  let tableColResize = $state<{ x: number; top: number; bottom: number } | null>(null);
+  let tableAddDragAxis = $state<"row" | "col" | null>(null);
   // Which single row/column grip to actually render — only the one under
   // the cursor, not every row/column at once, so the gutter doesn't turn
   // into a wall of grips the instant the table is hovered at all.
@@ -199,26 +240,36 @@
     tablePos: number;
     showHeaderRow: boolean;
     showHeaderColumn: boolean;
+    showIndexColumn: boolean;
   } | null>(null);
 
-  // Resolved independently of tableGutter (which only tracks the DOM <table>
-  // while the mouse is directly over it) since the drag handle can also be
-  // showing via the keyboard/cursor fallback — see onDragHandlePointerDown.
-  function onDragHandleContextMenu(e: MouseEvent) {
-    if (!editor) return;
-    const pos = hoverBlockPos ?? topLevelBlockPos();
-    if (pos === null) return;
-    const node = editor.state.doc.nodeAt(pos);
-    if (!node || node.type.name !== "table") return;
-    e.preventDefault();
-    e.stopPropagation();
+  // Opened from a plain (no-drag) left-click on a table's drag handle — see
+  // onDragHandlePointerDown's finish(). Used to live behind a right-click
+  // (oncontextmenu) instead; moved to left-click so it's reachable the same
+  // way as every other handle-click menu in this file, no secondary gesture
+  // to discover.
+  function openTableHeaderMenu(coords: { clientX: number; clientY: number }, pos: number, node: PMNode) {
+    // Only one table popup open at a time — opening this one closes any
+    // row/column grip menu left open from before.
+    tableRowMenu = null;
+    tableColMenu = null;
     tableHeaderMenu = {
-      x: e.clientX,
-      y: e.clientY,
+      x: coords.clientX,
+      y: coords.clientY,
       tablePos: pos,
       showHeaderRow: !!node.attrs.showHeaderRow,
       showHeaderColumn: !!node.attrs.showHeaderColumn,
+      showIndexColumn: !!node.attrs.showIndexColumn,
     };
+  }
+
+  function deleteTableFromMenu() {
+    if (!editor || !tableHeaderMenu) return;
+    const node = editor.state.doc.nodeAt(tableHeaderMenu.tablePos);
+    if (!node || node.type.name !== "table") return;
+    tableDeleteTable(editor, { node, pos: tableHeaderMenu.tablePos });
+    tableHeaderMenu = null;
+    selectedBlockRect = null;
   }
 
   function toggleTableHeaderRow() {
@@ -228,6 +279,10 @@
     const next = !tableHeaderMenu.showHeaderRow;
     setTableHeaderAttrs(editor, { node, pos: tableHeaderMenu.tablePos }, { showHeaderRow: next });
     tableHeaderMenu = { ...tableHeaderMenu, showHeaderRow: next };
+    // Belt-and-suspenders alongside the onTransaction-driven call: apply the
+    // DOM/style update here too, synchronously, in the same click handler,
+    // rather than only trusting the next onTransaction round-trip.
+    syncTableHeaderAttrs();
   }
 
   function toggleTableHeaderColumn() {
@@ -237,6 +292,113 @@
     const next = !tableHeaderMenu.showHeaderColumn;
     setTableHeaderAttrs(editor, { node, pos: tableHeaderMenu.tablePos }, { showHeaderColumn: next });
     tableHeaderMenu = { ...tableHeaderMenu, showHeaderColumn: next };
+    syncTableHeaderAttrs();
+  }
+
+  // Moved here from the first column's grip menu — this is the whole
+  // table's left-click menu, same place showHeaderRow/showHeaderColumn/
+  // delete-table live, rather than a separate gesture on a specific column.
+  function toggleTableIndexColumn() {
+    if (!editor || !tableHeaderMenu) return;
+    const node = editor.state.doc.nodeAt(tableHeaderMenu.tablePos);
+    if (!node || node.type.name !== "table") return;
+    const next = !tableHeaderMenu.showIndexColumn;
+    setShowIndexColumn(editor, { node, pos: tableHeaderMenu.tablePos }, next);
+    tableHeaderMenu = { ...tableHeaderMenu, showIndexColumn: next };
+  }
+
+  // Matches @tiptap/extension-table's own default cellMinWidth (this app
+  // never configures Table.configure({ cellMinWidth: ... }), so that
+  // default is what TableView actually renders with) — a floor so "evenly
+  // distribute" on a table with many columns can't shrink one below what
+  // the table view itself would already clamp it to.
+  const TABLE_CELL_MIN_WIDTH = 25;
+  const TABLE_INDEX_MIN_WIDTH = 40;
+  const TABLE_CONTENT_MIN_WIDTH = 50;
+  const TABLE_NEW_COLUMN_WIDTH = 200;
+  const TABLE_ADD_COL_GUTTER = 36;
+
+  function physicalColCount(node: PMNode): number {
+    return node.childCount > 0 ? node.child(0).childCount : 0;
+  }
+
+  function tableDimensionText(node: PMNode, rowDelta: number, colDelta: number): string {
+    return `${Math.max(1, physicalColCount(node) + colDelta)} × ${Math.max(1, rowCount(node) + rowDelta)}`;
+  }
+
+  function minWidthForPhysicalColumn(node: PMNode, index: number): number {
+    return node.attrs.showIndexColumn && index === 0 ? TABLE_INDEX_MIN_WIDTH : TABLE_CONTENT_MIN_WIDTH;
+  }
+
+  function measureContentColumnWidths(tableEl: HTMLTableElement, node: PMNode): number[] {
+    const off = node.attrs.showIndexColumn ? 1 : 0;
+    const widths = Array.from({ length: colCount(node) }, () => TABLE_CONTENT_MIN_WIDTH);
+    Array.from(tableEl.rows).forEach((row) => {
+      Array.from(row.cells)
+        .slice(off)
+        .forEach((cell, i) => {
+          if (i < widths.length) widths[i] = Math.max(widths[i], Math.ceil((cell as HTMLElement).scrollWidth + 2));
+        });
+    });
+    return widths;
+  }
+
+  function currentPhysicalColumnWidths(tableEl: HTMLTableElement, node: PMNode): number[] {
+    const cells = tableEl.rows[0] ? Array.from(tableEl.rows[0].cells) : [];
+    return Array.from({ length: physicalColCount(node) }, (_, i) =>
+      Math.max(minWidthForPhysicalColumn(node, i), Math.round(cells[i]?.getBoundingClientRect().width ?? TABLE_CONTENT_MIN_WIDTH)),
+    );
+  }
+
+  function applyLivePhysicalColumnWidths(tableEl: HTMLTableElement, widths: number[]) {
+    tableEl.querySelectorAll("colgroup col").forEach((col, i) => {
+      (col as HTMLElement).style.width = widths[i] ? `${widths[i]}px` : "";
+    });
+    tableEl.style.width = `${widths.reduce((sum, w) => sum + w, 0)}px`;
+  }
+
+  function distributeColumnsEvenlyAction() {
+    if (!editor || !tableHeaderMenu) return;
+    const node = editor.state.doc.nodeAt(tableHeaderMenu.tablePos);
+    if (!node || node.type.name !== "table") return;
+    const cols = colCount(node);
+    if (cols <= 0) return;
+    const tableEl = tableElAt(tableHeaderMenu.tablePos);
+    if (!tableEl) return;
+    const indexColWidth = node.attrs.showIndexColumn ? 40 : 0; // matches the index column's own fixed CSS width
+    const totalWidth = tableEl.getBoundingClientRect().width - indexColWidth;
+    const perCol = Math.max(TABLE_CELL_MIN_WIDTH, Math.floor(totalWidth / cols));
+    setColumnWidths(editor, { node, pos: tableHeaderMenu.tablePos }, Array(cols).fill(perCol));
+    tableHeaderMenu = null;
+    selectedBlockRect = null;
+  }
+
+  function fitColumnsToContentAction() {
+    if (!editor || !tableHeaderMenu) return;
+    const node = editor.state.doc.nodeAt(tableHeaderMenu.tablePos);
+    if (!node || node.type.name !== "table") return;
+    const cols = colCount(node);
+    if (cols <= 0) return;
+    const tablePos = tableHeaderMenu.tablePos;
+    // Clearing colwidth (see setColumnWidths) isn't itself "size to
+    // content" — it's "stop overriding size, fall back to the browser's
+    // own table layout", which sizes each column from its content's
+    // natural width. There's no explicit "measure content" step because
+    // that's exactly what a colwidth-less <table> layout already does.
+    const tableEl = tableElAt(tablePos);
+    if (!tableEl) return;
+    setColumnWidths(editor, { node, pos: tablePos }, measureContentColumnWidths(tableEl, node));
+    // TableView's own updateColumns (@tiptap/extension-table) sets
+    // min-width once a column's colwidth clears, but never removes a
+    // *previously* fixed `width` (e.g. from "evenly distribute" run
+    // earlier) — without this, that stale width silently keeps winning and
+    // "fit to content" visibly does nothing. <col> elements live in the
+    // table's colgroup, a sibling of (not inside) the NodeView's
+    // contentDOM, so mutating them directly is safe the same way
+    // syncTableHeaderAttrs's table-level attribute writes are: ProseMirror's
+    // mutation observer only watches contentDOM.
+    tableHeaderMenu = null;
+    selectedBlockRect = null;
   }
 
   // Popover opened by a plain click (no drag) on a row/column grip — insert
@@ -250,7 +412,13 @@
   // opens this menu, which would otherwise bubble to svelte:window's onclick
   // and close the menu in the same tick it opened.
   let tableRowMenu = $state<{ x: number; y: number; tablePos: number; index: number; rowCount: number } | null>(null);
-  let tableColMenu = $state<{ x: number; y: number; tablePos: number; index: number; colCount: number } | null>(null);
+  let tableColMenu = $state<{
+    x: number;
+    y: number;
+    tablePos: number;
+    index: number;
+    colCount: number;
+  } | null>(null);
 
   function tableRowMenuRef(): TableRef | null {
     if (!editor || !tableRowMenu) return null;
@@ -319,8 +487,11 @@
     const localX = clientX - containerRect.left;
     const rowIdx = tableGutter.rows.findIndex((r) => localY >= r.top && localY <= r.bottom);
     const colIdx = tableGutter.cols.findIndex((c) => localX >= c.left && localX <= c.right);
+    const boundary =
+      tableGutter.resizeBoundaries.find((b) => localY >= b.top && localY <= b.bottom && Math.abs(localX - b.x) <= 5) ?? null;
     hoveredRowIndex = rowIdx === -1 ? null : rowIdx;
     hoveredColIndex = colIdx === -1 ? null : colIdx;
+    hoveredTableResizeBoundary = boundary;
   }
   // Floating label that follows the pointer while dragging a row/column
   // grip, naming which row/column is being moved — same recipe as
@@ -347,6 +518,20 @@
   // rules below actually apply while editing (markdown/HTML serialization
   // is unaffected — that path uses the schema's DOMSerializer directly, not
   // this NodeView, so it already reflects the attrs correctly).
+  //
+  // Only ever touch attributes on `tableEl` itself here, never anything
+  // inside it (a cell, a row, ...): TableView's ignoreMutation only ignores
+  // mutations to the table/colgroup wrapper — anything inside its
+  // `contentDOM` (the <tbody>, i.e. every row and cell) is exactly what
+  // ProseMirror's own DOM-mutation observer watches for real edits. An
+  // earlier version of this function set inline styles directly on header
+  // cells, which — despite doing nothing conceptually different from a CSS
+  // rule — triggered that observer on every call, which reconciles by
+  // reading the DOM back into the document, which re-fires onTransaction,
+  // which called this function again: a real infinite toggle loop, caught
+  // via a debug log flooding with alternating true/false. CSS attribute
+  // selectors sidestep this entirely since nothing inside contentDOM is
+  // ever touched.
   function syncTableHeaderAttrs() {
     if (!editor) return;
     editor.state.doc.descendants((node, pos) => {
@@ -355,7 +540,34 @@
       if (!tableEl) return;
       tableEl.toggleAttribute("data-show-header-row", !!node.attrs.showHeaderRow);
       tableEl.toggleAttribute("data-show-header-column", !!node.attrs.showHeaderColumn);
+      tableEl.toggleAttribute("data-show-index-column", !!node.attrs.showIndexColumn);
     });
+  }
+
+  function syncActiveTableCell() {
+    if (!editor) return;
+    editor.view.dom.querySelectorAll(".active-table-cell").forEach((el) => el.classList.remove("active-table-cell"));
+    const from = editor.state.selection.$from;
+    for (let depth = from.depth; depth > 0; depth--) {
+      const node = from.node(depth);
+      if (node.type.name !== "tableCell" && node.type.name !== "tableHeader") continue;
+      const dom = editor.view.nodeDOM(from.before(depth)) as HTMLElement | null;
+      dom?.classList.add("active-table-cell");
+      return;
+    }
+  }
+
+  function syncWideTableWrappers() {
+    if (!editor) return;
+    editor.view.dom.querySelectorAll(".tableWrapper").forEach((wrapper) => {
+      const table = wrapper.querySelector("table") as HTMLTableElement | null;
+      const tableWidth = table?.getBoundingClientRect().width ?? 0;
+      wrapper.classList.toggle("wide-table-wrapper", tableWidth > 1000);
+    });
+  }
+
+  function queueTableWrapperSync() {
+    requestAnimationFrame(syncWideTableWrappers);
   }
 
   function labelForTableRow(index: number): string {
@@ -371,12 +583,23 @@
     return t("table.rowLabel", { n: String(index + 1) });
   }
 
+  // The index column (see tableOps.ts's setShowIndexColumn), when present,
+  // is always physical grid column 0 — everywhere in this file that reads
+  // real DOM <tr>.cells by a "logical" column index (the index the col-grip
+  // UI and tableOps.ts's own logical-column API use) has to add this back
+  // in to land on the right physical cell.
+  function tableColDomOffset(tablePos: number): number {
+    const node = editor?.state.doc.nodeAt(tablePos);
+    return node?.attrs.showIndexColumn ? 1 : 0;
+  }
+
   function labelForTableCol(index: number): string {
     const table = tableGutter ? tableElAt(tableGutter.tablePos) : null;
+    const off = tableGutter ? tableColDomOffset(tableGutter.tablePos) : 0;
     const text = table
       ? Array.from(table.rows)
           .slice(0, 3)
-          .map((r) => r.cells[index]?.textContent?.trim() ?? "")
+          .map((r) => r.cells[index + off]?.textContent?.trim() ?? "")
           .filter(Boolean)
           .join(" · ")
       : "";
@@ -399,15 +622,41 @@
     }
     const containerRect = wrapperEl.getBoundingClientRect();
     const tableRect = tableEl.getBoundingClientRect();
+    const tableWrapperEl = tableEl.closest(".tableWrapper") as HTMLElement | null;
+    const tableWrapperRect = tableWrapperEl?.getBoundingClientRect() ?? tableRect;
+    const tableWrapperStyle = tableWrapperEl ? getComputedStyle(tableWrapperEl) : null;
+    const tableViewportLeft = tableWrapperRect.left - containerRect.left;
+    const tableViewportRight =
+      tableWrapperRect.right -
+      containerRect.left -
+      (tableWrapperStyle ? Number.parseFloat(tableWrapperStyle.paddingRight) || (tableWrapperEl?.classList.contains("wide-table-wrapper") ? TABLE_ADD_COL_GUTTER : 0) : 0);
     const rowEls = Array.from(tableEl.rows);
     const rows = rowEls.map((r) => {
       const rect = r.getBoundingClientRect();
       return { top: rect.top - containerRect.top, bottom: rect.bottom - containerRect.top };
     });
+    const rowHeights = rows.map((r) => r.bottom - r.top);
     const firstRowCells = rowEls[0] ? Array.from(rowEls[0].cells) : [];
-    const cols = firstRowCells.map((c) => {
+    const colWidths = firstRowCells.map((c) => c.getBoundingClientRect().width);
+    // Drop the index column (if any) from the gutter's own column list —
+    // it's not draggable/insertable/deletable like a real column, so the
+    // col-grip UI (and everything downstream keyed off this array's
+    // indices) should never see it at all.
+    const contentCells = firstRowCells.slice(tableColDomOffset(ref.pos));
+    const cols = contentCells.map((c) => {
       const rect = c.getBoundingClientRect();
       return { left: rect.left - containerRect.left, right: rect.right - containerRect.left };
+    });
+    const contentColWidths = cols.map((c) => c.right - c.left);
+    const resizeBoundaries = firstRowCells.slice(tableColDomOffset(ref.pos)).map((c, i) => {
+      const rect = c.getBoundingClientRect();
+      const physicalIndex = i + tableColDomOffset(ref.pos);
+      return {
+        x: rect.right - containerRect.left,
+        top: tableRect.top - containerRect.top,
+        bottom: tableRect.bottom - containerRect.top,
+        index: physicalIndex,
+      };
     });
     tableGutter = {
       tablePos: ref.pos,
@@ -415,8 +664,15 @@
       tableBottom: tableRect.bottom - containerRect.top,
       tableLeft: tableRect.left - containerRect.left,
       tableRight: tableRect.right - containerRect.left,
+      tableViewportLeft,
+      tableViewportRight,
+      visibleColCount: firstRowCells.length,
       rows,
       cols,
+      rowHeights,
+      colWidths,
+      contentColWidths,
+      resizeBoundaries,
     };
   }
 
@@ -436,6 +692,67 @@
     return { node, pos: tableGutter.tablePos };
   }
 
+  function sumSizes(sizes: number[]): number {
+    return sizes.reduce((sum, size) => sum + size, 0);
+  }
+
+  function tableRowStripRect(gutter: TableGutter) {
+    const visible = tableVisibleRect(gutter);
+    return { left: visible.left, width: visible.width };
+  }
+
+  function tableVisibleRect(gutter: TableGutter) {
+    const left = Math.max(gutter.tableLeft, gutter.tableViewportLeft);
+    const right = Math.min(gutter.tableRight, gutter.tableViewportRight);
+    const width = Math.max(0, right - left);
+    return { left, right: left + width, width };
+  }
+
+  function visibleColumnOffsets(gutter: TableGutter, visible: { left: number; width: number }) {
+    return internalOffsets(gutter.colWidths)
+      .map((x) => gutter.tableLeft + x - visible.left)
+      .filter((x) => x >= 0 && x <= visible.width);
+  }
+
+  function internalOffsets(sizes: number[]): number[] {
+    const offsets: number[] = [];
+    let x = 0;
+    for (let i = 0; i < sizes.length - 1; i++) {
+      x += sizes[i];
+      offsets.push(x);
+    }
+    return offsets;
+  }
+
+  function repeatedSize(sizes: number[], count: number, fallback: number): number[] {
+    const size = sizes.length > 0 ? sizes[sizes.length - 1] : fallback;
+    return Array.from({ length: count }, () => size);
+  }
+
+  function rowPreviewHeights(gutter: TableGutter, adjust: { count: number; removing: boolean }): number[] {
+    return adjust.removing
+      ? gutter.rowHeights.slice(Math.max(0, gutter.rowHeights.length - adjust.count))
+      : repeatedSize(gutter.rowHeights, adjust.count, 32);
+  }
+
+  function colPreviewWidths(gutter: TableGutter, adjust: { count: number; removing: boolean }): number[] {
+    return adjust.removing
+      ? gutter.contentColWidths.slice(Math.max(0, gutter.contentColWidths.length - adjust.count))
+      : repeatedSize([TABLE_NEW_COLUMN_WIDTH], adjust.count, TABLE_NEW_COLUMN_WIDTH);
+  }
+
+  function trailingWidthStepCount(widths: number[], distance: number, cap: number) {
+    if (distance <= 0 || cap <= 0) return 0;
+    let total = 0;
+    let count = 0;
+    for (let i = widths.length - 1; i >= 0 && count < cap; i--) {
+      total += widths[i] || TABLE_NEW_COLUMN_WIDTH;
+      count++;
+      if (distance <= total) return count;
+    }
+    return count;
+  }
+
   // Drag the add-row strip up/down: down previews adding N rows, up previews
   // removing the trailing N rows (capped at rowCount-1) — nothing is
   // actually added/removed until pointerup, and a plain click (no real
@@ -445,8 +762,13 @@
     const gutter = tableGutter;
     const rowH = gutter.rows.length > 0 ? (gutter.tableBottom - gutter.tableTop) / gutter.rows.length : 32;
     const startY = e.clientY;
+    const previousCursor = document.body.style.cursor;
     let started = false;
     let steps = 0;
+    tableAddDragAxis = "row";
+    hoveredTableResizeBoundary = null;
+    document.body.style.cursor = "ns-resize";
+    document.documentElement.classList.add("table-row-resizing");
 
     function onMove(ev: PointerEvent) {
       ev.preventDefault();
@@ -465,6 +787,17 @@
         const count = Math.min(-steps, cap);
         tableRowAdjust = count > 0 ? { count, removing: true } : null;
       } else tableRowAdjust = null;
+      const ref = currentTableRef();
+      const adjust = tableRowAdjust;
+      const strip = tableRowStripRect(gutter);
+      tableDimensionLabel =
+        ref && adjust
+          ? {
+              text: tableDimensionText(ref.node, adjust.removing ? -adjust.count : adjust.count, 0),
+              left: strip.left + strip.width / 2,
+              top: gutter.tableBottom + 28,
+            }
+          : null;
     }
 
     function finish() {
@@ -472,8 +805,12 @@
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);
       tableDragActive = false;
+      tableAddDragAxis = null;
+      document.body.style.cursor = previousCursor;
+      document.documentElement.classList.remove("table-row-resizing");
       const adjust = tableRowAdjust;
       tableRowAdjust = null;
+      tableDimensionLabel = null;
       const ref = currentTableRef();
       if (ref) {
         if (!started || steps === 0) {
@@ -502,10 +839,14 @@
   function onAddColPointerDown(e: PointerEvent) {
     if (e.button !== 0 || !editor || !wrapperEl || !tableGutter) return;
     const gutter = tableGutter;
-    const colW = gutter.cols.length > 0 ? (gutter.tableRight - gutter.tableLeft) / gutter.cols.length : 80;
     const startX = e.clientX;
+    const previousCursor = document.body.style.cursor;
     let started = false;
     let steps = 0;
+    tableAddDragAxis = "col";
+    hoveredTableResizeBoundary = null;
+    document.body.style.cursor = "ew-resize";
+    document.documentElement.classList.add("table-col-adding");
 
     function onMove(ev: PointerEvent) {
       ev.preventDefault();
@@ -513,14 +854,31 @@
         started = true;
         tableDragActive = true;
       }
-      steps = Math.round((ev.clientX - startX) / colW);
-      if (steps > 0) tableColAdjust = { count: steps, removing: false };
-      else if (steps < 0) {
+      const delta = ev.clientX - startX;
+      if (delta > 0) {
+        steps = Math.max(1, Math.ceil(delta / TABLE_NEW_COLUMN_WIDTH));
+        tableColAdjust = { count: steps, removing: false };
+      } else if (delta < 0) {
         const ref = currentTableRef();
         const cap = ref ? Math.min(gutter.cols.length - 1, trailingEmptyColumnCount(ref.node)) : 0;
-        const count = Math.min(-steps, cap);
+        const count = trailingWidthStepCount(gutter.contentColWidths, -delta, cap);
+        steps = -count;
         tableColAdjust = count > 0 ? { count, removing: true } : null;
-      } else tableColAdjust = null;
+      } else {
+        steps = 0;
+        tableColAdjust = null;
+      }
+      const ref = currentTableRef();
+      const adjust = tableColAdjust;
+      const visible = tableVisibleRect(gutter);
+      tableDimensionLabel =
+        ref && adjust
+          ? {
+              text: tableDimensionText(ref.node, 0, adjust.removing ? -adjust.count : adjust.count),
+              left: visible.right + 34,
+              top: (gutter.tableTop + gutter.tableBottom) / 2,
+            }
+          : null;
     }
 
     function finish() {
@@ -528,8 +886,12 @@
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);
       tableDragActive = false;
+      tableAddDragAxis = null;
+      document.body.style.cursor = previousCursor;
+      document.documentElement.classList.remove("table-col-adding");
       const adjust = tableColAdjust;
       tableColAdjust = null;
+      tableDimensionLabel = null;
       const ref = currentTableRef();
       if (ref) {
         if (!started || steps === 0) {
@@ -547,6 +909,68 @@
     }
     function onCancel() {
       finish();
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+  }
+
+  function onTableColResizePointerDown(e: PointerEvent, boundary: { x: number; top: number; bottom: number; index: number }) {
+    if (e.button !== 0 || !editor || !wrapperEl || !tableGutter) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const gutter = tableGutter;
+    const ref = currentTableRef();
+    const tableEl = ref ? tableElAt(ref.pos) : null;
+    if (!ref || !tableEl) return;
+    const startX = e.clientX;
+    const startWidths = currentPhysicalColumnWidths(tableEl, ref.node);
+    let nextWidths = [...startWidths];
+    const previousCursor = document.body.style.cursor;
+    tableDragActive = true;
+    tableColResize = { x: boundary.x, top: boundary.top, bottom: boundary.bottom };
+    document.body.style.cursor = "col-resize";
+    document.documentElement.classList.add("table-col-resizing");
+
+    function onMove(ev: PointerEvent) {
+      ev.preventDefault();
+      const leftIndex = boundary.index;
+      const rightIndex = boundary.index + 1;
+      const leftMin = minWidthForPhysicalColumn(ref!.node, leftIndex);
+      const rawDelta = ev.clientX - startX;
+      nextWidths = [...startWidths];
+      let delta: number;
+      if (rightIndex < startWidths.length) {
+        const rightMin = minWidthForPhysicalColumn(ref!.node, rightIndex);
+        delta = Math.max(leftMin - startWidths[leftIndex], Math.min(rawDelta, startWidths[rightIndex] - rightMin));
+        nextWidths[rightIndex] = Math.round(startWidths[rightIndex] - delta);
+      } else {
+        delta = Math.max(leftMin - startWidths[leftIndex], rawDelta);
+      }
+      nextWidths[leftIndex] = Math.round(startWidths[leftIndex] + delta);
+      applyLivePhysicalColumnWidths(tableEl!, nextWidths);
+      tableColResize = { x: boundary.x + delta, top: boundary.top, bottom: boundary.bottom };
+    }
+
+    function finish(commit: boolean) {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      tableDragActive = false;
+      tableColResize = null;
+      hoveredTableResizeBoundary = null;
+      document.body.style.cursor = previousCursor;
+      document.documentElement.classList.remove("table-col-resizing");
+      if (!commit) applyLivePhysicalColumnWidths(tableEl!, startWidths);
+      if (commit) setPhysicalColumnWidths(editor!, ref!, nextWidths);
+      tableGutter = null;
+    }
+
+    function onUp() {
+      finish(true);
+    }
+    function onCancel() {
+      finish(false);
     }
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -595,8 +1019,14 @@
         tableGutter = null;
       } else {
         // Plain click, no drag: open the insert/delete menu for this row.
+        // Only one table popup open at a time.
         const ref = currentTableRef();
-        if (ref) tableRowMenu = { x: e.clientX, y: e.clientY, tablePos: ref.pos, index, rowCount: rowCount(ref.node) };
+        if (ref) {
+          tableHeaderMenu = null;
+          tableColMenu = null;
+          selectedBlockRect = null;
+          tableRowMenu = { x: e.clientX, y: e.clientY, tablePos: ref.pos, index, rowCount: rowCount(ref.node) };
+        }
       }
     }
 
@@ -647,9 +1077,21 @@
         if (ref) tableMoveColumn(editor!, ref, index, slotToTargetIndex(slot, index));
         tableGutter = null;
       } else {
-        // Plain click, no drag: open the insert/delete menu for this column.
+        // Plain click, no drag: open the insert/delete menu for this
+        // column. Only one table popup open at a time.
         const ref = currentTableRef();
-        if (ref) tableColMenu = { x: e.clientX, y: e.clientY, tablePos: ref.pos, index, colCount: colCount(ref.node) };
+        if (ref) {
+          tableHeaderMenu = null;
+          tableRowMenu = null;
+          selectedBlockRect = null;
+          tableColMenu = {
+            x: e.clientX,
+            y: e.clientY,
+            tablePos: ref.pos,
+            index,
+            colCount: colCount(ref.node),
+          };
+        }
       }
     }
 
@@ -841,6 +1283,25 @@
     return effectiveBlockPos(sel);
   }
 
+  // The whole node's own rect (unlike lineRectNear, which for a table only
+  // returns the hovered row) — what a drag-handle click's menu (table-header
+  // menu or the "change" block-type menu) actually acts on is always the
+  // entire block, so that's what selectedBlockRect highlights.
+  function blockRectAt(pos: number): { top: number; left: number; width: number; height: number } | null {
+    if (!editor || !wrapperEl) return null;
+    const dom = editor.view.nodeDOM(pos) as HTMLElement | null;
+    if (!dom) return null;
+    const containerRect = wrapperEl.getBoundingClientRect();
+    const rect = dom.getBoundingClientRect();
+    const contentRect = element?.getBoundingClientRect() ?? rect;
+    return {
+      top: rect.top - containerRect.top,
+      left: contentRect.left - containerRect.left,
+      width: contentRect.width,
+      height: rect.height,
+    };
+  }
+
   function updateHandle() {
     if (!editor || !wrapperEl) {
       if (!menuOpen) handleTop = null;
@@ -930,6 +1391,35 @@
     if (!editor) return null;
     const outer = editor.view.nodeDOM(pos) as HTMLElement | null;
     if (!outer) return null;
+
+    // A table is one ProseMirror top-level node (effectiveBlockPos never
+    // descends into it — see its own comment), but visually many rows —
+    // without this, deepestLineContainer below stops at the tableWrapper
+    // div @tiptap/extension-table's TableView renders (nodeDOM(pos) for a
+    // table returns that wrapper, not the <table> itself — it has exactly
+    // one element child, so deepestLineContainer would otherwise descend
+    // *into* the <table>, which itself has 2+ children (colgroup + tbody)
+    // and stops there) and the segment logic further down treats the whole
+    // table as one "line", pinning the handle-group to the table's own
+    // bounding box for its entire height instead of tracking which row the
+    // mouse is actually over. Anchoring to the hovered <tr> instead
+    // (falling back to the first row when there's no mouseY, e.g. the
+    // keyboard-cursor fallback) matches how the row/col grips in the table
+    // gutter already track the hovered row.
+    const tableEl = outer instanceof HTMLTableElement ? outer : outer.querySelector("table");
+    if (tableEl) {
+      const rows = Array.from(tableEl.rows);
+      if (rows.length === 0) return null;
+      if (mouseY !== null) {
+        for (const row of rows) {
+          const rect = row.getBoundingClientRect();
+          if (mouseY >= rect.top && mouseY <= rect.bottom) return { top: rect.top, bottom: rect.bottom };
+        }
+      }
+      const first = rows[0].getBoundingClientRect();
+      return { top: first.top, bottom: first.bottom };
+    }
+
     const dom = deepestLineContainer(outer);
 
     // ProseMirror auto-appends a `.ProseMirror-trailingBreak` <br> to keep
@@ -1035,6 +1525,143 @@
   // onSelectionUpdate handler below can tell "we just finalized a drag-select"
   // apart from "the user clicked/typed elsewhere", which should clear it.
   let applyingMultiSelectSelection = false;
+
+  // -- Selection toolbar: floating "highlight color" button shown above any
+  // non-empty text selection, opening a color-grid picker (Notion/office-
+  // suite style). Positioned from the live DOM selection's own bounding
+  // rect (window.getSelection()) rather than re-deriving it from ProseMirror
+  // coordinates — simpler and exactly matches what's visually selected.
+  let selectionToolbar = $state<{ top: number; left: number } | null>(null);
+  let highlightPickerOpen = $state(false);
+  let highlightPickerPos = $state({ x: 0, y: 0 });
+  let highlightCurrentColor = $state<string | null>(null);
+  // Snapshot of the selection at the moment the toolbar's button is
+  // clicked — applying a color later (especially via the native
+  // <input type="color"> dialog, which can steal focus for a while) re-
+  // selects this exact range first rather than trusting whatever the
+  // "current" selection happens to be by then.
+  let pendingHighlightRange: { from: number; to: number } | null = null;
+
+  function updateSelectionToolbar() {
+    if (!editor || !wrapperEl) {
+      selectionToolbar = null;
+      return;
+    }
+    const { selection } = editor.state;
+    if (!editor.isFocused || selection.empty || !(selection instanceof TextSelection)) {
+      selectionToolbar = null;
+      return;
+    }
+    const domSel = window.getSelection();
+    if (!domSel || domSel.rangeCount === 0) {
+      selectionToolbar = null;
+      return;
+    }
+    const rect = domSel.getRangeAt(0).getBoundingClientRect();
+    if (!rect.width && !rect.height) {
+      selectionToolbar = null;
+      return;
+    }
+    // Stored raw (container-relative, not yet divided by zoomScale) — same
+    // convention as handleTop/dropIndicatorTop: the division happens once,
+    // in the template, at render time.
+    const containerRect = wrapperEl.getBoundingClientRect();
+    selectionToolbar = {
+      top: rect.top - containerRect.top,
+      left: rect.left + rect.width / 2 - containerRect.left,
+    };
+  }
+
+  function openHighlightPicker(e: MouseEvent) {
+    if (!editor) return;
+    e.stopPropagation();
+    const { from, to } = editor.state.selection;
+    pendingHighlightRange = { from, to };
+    highlightCurrentColor = editor.isActive("highlight") ? ((editor.getAttributes("highlight").color as string) ?? null) : null;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    highlightPickerPos = { x: rect.left, y: rect.bottom + 6 };
+    highlightPickerOpen = true;
+  }
+
+  function applyHighlightColor(color: string | null) {
+    highlightPickerOpen = false;
+    if (!editor || !pendingHighlightRange) return;
+    const { from, to } = pendingHighlightRange;
+    const chain = editor.chain().focus().setTextSelection({ from, to });
+    if (color) chain.setHighlight({ color }).run();
+    else chain.unsetHighlight().run();
+    pendingHighlightRange = null;
+  }
+
+  // -- Grammar-error right-click menu: shown when grammar check is on and
+  // the user right-clicks a word carrying the "grammar-error" decoration
+  // (see grammarCheck.ts's buildDecorations — a plain inline <span>, not a
+  // mark, so its range is derived from the DOM node's own text rather than
+  // getMarkRange). Offers nspell's spelling suggestions plus "add to
+  // dictionary".
+  let grammarMenu = $state<{ x: number; y: number; from: number; to: number; word: string; suggestions: string[] } | null>(
+    null,
+  );
+
+  function onEditorContextMenu(e: MouseEvent) {
+    if (!editor || !appState.settings.grammarCheckEnabled) return;
+    const target = (e.target as HTMLElement | null)?.closest?.(".grammar-error") as HTMLElement | null;
+    if (!target) return;
+    const word = target.textContent ?? "";
+    if (!word) return;
+    const from = editor.view.posAtDOM(target, 0);
+    const to = from + word.length;
+    const speller = peekSpeller();
+    const nspellSuggestions = speller ? speller.suggest(word) : [];
+    // A dictionary entry differing only by case is a stronger, already-
+    // approved suggestion — put it first, ahead of nspell's own guesses.
+    const dictMatch = findDictionaryCaseMatch(word);
+    const suggestions = (dictMatch ? [dictMatch, ...nspellSuggestions.filter((s) => s !== dictMatch)] : nspellSuggestions).slice(
+      0,
+      5,
+    );
+    e.preventDefault();
+    grammarMenu = { x: e.clientX, y: e.clientY, from, to, word, suggestions };
+  }
+
+  function applyGrammarSuggestion(suggestion: string) {
+    if (!editor || !grammarMenu) return;
+    const { from, to } = grammarMenu;
+    editor
+      .chain()
+      .focus()
+      .command(({ tr }) => {
+        tr.insertText(suggestion, from, to);
+        return true;
+      })
+      .run();
+    grammarMenu = null;
+  }
+
+  async function addGrammarWordToDictionary() {
+    if (!grammarMenu) return;
+    const word = grammarMenu.word;
+    grammarMenu = null;
+    addCustomDictionaryWord(word);
+    if (editor) recomputeGrammarDecorations(editor.view);
+    await appState.addDictionaryWord(word);
+  }
+
+  function toggleInlineFormat(e: MouseEvent, format: "bold" | "italic" | "underline" | "wavyUnderline") {
+    e.stopPropagation();
+    if (!editor) return;
+    const chain = editor.chain().focus();
+    if (format === "bold") chain.toggleBold();
+    else if (format === "italic") chain.toggleItalic();
+    else if (format === "underline") chain.toggleUnderline();
+    else chain.toggleMark("wavyUnderline");
+    chain.run();
+  }
+
+  function onEditorScroll() {
+    updateHandle();
+    updateSelectionToolbar();
+  }
 
   // Same clamped posAtCoords→block-position resolution used by
   // updateDropTarget/onContentMouseMove, extracted since the margin-drag
@@ -1219,7 +1846,7 @@
     if (tableEl) {
       updateTableGutter(tableEl);
       if (!tableDragActive) updateHoveredGrip(e.clientX, e.clientY);
-    } else if (tableGutter && !tableDragActive && !target?.closest?.(".table-gutter-btn, .table-gutter-add")) {
+    } else if (tableGutter && !tableDragActive && !target?.closest?.(".table-gutter-btn, .table-gutter-add, .table-col-resize-hit")) {
       // The grip/add buttons are absolutely-positioned siblings of the
       // <table>, not descendants of it — closest("table") alone would fail
       // the instant the cursor reaches one of them (reached by moving off
@@ -1228,6 +1855,7 @@
       tableGutter = null;
       hoveredRowIndex = null;
       hoveredColIndex = null;
+      hoveredTableResizeBoundary = null;
     }
   }
 
@@ -1240,6 +1868,7 @@
       tableGutter = null;
       hoveredRowIndex = null;
       hoveredColIndex = null;
+      hoveredTableResizeBoundary = null;
     }
   }
 
@@ -1258,7 +1887,7 @@
     const target = e.target as HTMLElement | null;
     if (
       target?.closest?.(
-        ".tiptap, .handle-group, .block-menu, .block-drag-ghost, .block-drop-indicator, .table-gutter-btn, .table-gutter-add",
+        ".tiptap, .handle-group, .block-menu, .block-drag-ghost, .block-drop-indicator, .table-gutter-btn, .table-gutter-add, .table-col-resize-hit",
       )
     )
       return;
@@ -1466,6 +2095,7 @@
       if (!started) {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < BLOCK_DRAG_THRESHOLD) return;
         started = true;
+        selectedBlockRect = null;
         dragSource = source;
         if (isGroupDrag) {
           multiSelectDragging = true;
@@ -1495,13 +2125,19 @@
       if (started) {
         commitBlockMove();
       } else {
-        // Plain click, no drag: opens the same menu as the "+" handle, but
-        // in "change" mode — always converts the current line in place
-        // (per-item for a list line, via insertBlock's listContext handling)
-        // regardless of whether it has content.
         dragSource = null;
         dropTargetPos = null;
-        toggleMenu("change");
+        const clickedNode = editor!.state.doc.nodeAt(pos!);
+        selectedBlockRect = blockRectAt(pos!);
+        if (clickedNode && clickedNode.type.name === "table") {
+          openTableHeaderMenu(e, pos!, clickedNode);
+        } else {
+          // Plain click, no drag: opens the same menu as the "+" handle, but
+          // in "change" mode — always converts the current line in place
+          // (per-item for a list line, via insertBlock's listContext handling)
+          // regardless of whether it has content.
+          toggleMenu("change");
+        }
       }
     }
 
@@ -1789,7 +2425,14 @@
   async function resolveAsyncExtra(key: string): Promise<LinkPick | null> {
     if (key === "fileLink") return appState.pickFileLink();
     if (key === "newPage") return appState.createNewPageNear(appState.activeTab?.path ?? null);
-    if (key === "webLink") return appState.pickWebLink();
+    if (key === "webLink") {
+      // The insert-new-link flow never shows the dialog's "convert to plain
+      // text" option (see WebLinkDialog.svelte's `editing` guard) — this
+      // narrows pickWebLink's wider return type back down for that reason,
+      // not because { unlink: true } is actually reachable here.
+      const result = await appState.pickWebLink();
+      return result && "path" in result ? result : null;
+    }
     return null;
   }
 
@@ -2047,9 +2690,12 @@
           link: { openOnClick: false },
         }),
         FullwidthHeadingShortcut,
-        AutoPairPunctuation,
         Markdown.configure({ html: true, transformPastedText: true }),
         SearchHighlight,
+        GrammarCheck,
+        Highlight.configure({ multicolor: true }),
+        WavyUnderline,
+        JoinAdjacentLists,
         TaskList,
         TaskItem,
         Table,
@@ -2075,6 +2721,7 @@
         scheduleSync();
         updateHandle();
         updateSlash();
+        queueTableWrapperSync();
       },
       onSelectionUpdate: () => {
         // Any selection change we didn't just make ourselves (a click, a
@@ -2089,31 +2736,48 @@
         }
         updateHandle();
         updateSlash();
+        syncActiveTableCell();
+        updateSelectionToolbar();
       },
-      onFocus: () => updateHandle(),
+      onFocus: () => {
+        updateHandle();
+        syncActiveTableCell();
+        queueTableWrapperSync();
+      },
       onBlur: () => {
         if (!menuOpen && hoverBlockPos === null) handleTop = null;
         slashMenuState.close();
+        selectionToolbar = null;
+        editor?.view.dom.querySelectorAll(".active-table-cell").forEach((el) => el.classList.remove("active-table-cell"));
       },
-      onCreate: () => syncTableHeaderAttrs(),
+      onCreate: () => {
+        syncTableHeaderAttrs();
+        syncActiveTableCell();
+        queueTableWrapperSync();
+      },
       onTransaction: () => {
         syncUndoRedo();
         syncTableHeaderAttrs();
+        syncActiveTableCell();
+        queueTableWrapperSync();
       },
     });
     editorBridge.instance = editor;
     editorBridge.scrollToPos = scrollToPos;
     editorBridge.scrollToRange = scrollToRange;
     editorBridge.resetZoom = resetZoom;
+    setGrammarCheckEnabled(editor.view, appState.settings.grammarCheckEnabled);
     lastTabId = appState.activeTabId;
     refreshDerivedState();
     syncUndoRedo();
-    scrollEl?.addEventListener("scroll", updateHandle, { passive: true });
+    scrollEl?.addEventListener("scroll", onEditorScroll, { passive: true });
+    window.addEventListener("resize", queueTableWrapperSync);
   });
 
   onDestroy(() => {
     if (debounceHandle) clearTimeout(debounceHandle);
-    scrollEl?.removeEventListener("scroll", updateHandle);
+    scrollEl?.removeEventListener("scroll", onEditorScroll);
+    window.removeEventListener("resize", queueTableWrapperSync);
     slashMenuState.onSelect = null;
     slashMenuState.close();
     editor?.destroy();
@@ -2128,12 +2792,32 @@
   });
 
   $effect(() => {
+    const enabled = appState.settings.grammarCheckEnabled;
+    if (editor) setGrammarCheckEnabled(editor.view, enabled);
+  });
+
+  // Not just an onMount-time read: Editor.svelte mounts (child) before
+  // +page.svelte's onMount runs appState.init() (parent) — the async
+  // api.getSettings() call inside it hasn't resolved yet when this
+  // component first mounts, so appState.settings.customDictionary is still
+  // its empty default at that point. A dictionary word added in a previous
+  // session would silently never reach the spell-checker's in-memory set on
+  // a fresh launch — reading it reactively here (same pattern as
+  // grammarCheckEnabled above) re-runs once appState.settings is actually
+  // populated, not just once at mount time.
+  $effect(() => {
+    setCustomDictionary(appState.settings.customDictionary ?? []);
+  });
+
+  $effect(() => {
     const tab = appState.activeTab;
     const id = appState.activeTabId;
     if (!editor || id === lastTabId) return;
     lastTabId = id;
     switching = true;
     clearMultiSelect();
+    selectionToolbar = null;
+    highlightPickerOpen = false;
     // Chained so the addToHistory meta lands on the same transaction as the
     // content replacement: otherwise every tab switch/open pushed a
     // whole-document replace onto the undo stack, and a couple of undos
@@ -2143,6 +2827,7 @@
     refreshDerivedState();
     updateHandle();
     syncUndoRedo();
+    queueTableWrapperSync();
   });
 </script>
 
@@ -2153,6 +2838,9 @@
     if (tableHeaderMenu) tableHeaderMenu = null;
     if (tableRowMenu) tableRowMenu = null;
     if (tableColMenu) tableColMenu = null;
+    if (highlightPickerOpen) highlightPickerOpen = false;
+    if (grammarMenu) grammarMenu = null;
+    if (selectedBlockRect) selectedBlockRect = null;
   }}
   onkeydown={onWindowKeydown}
 />
@@ -2181,6 +2869,12 @@
         style={`top:${r.top / zoomScale}px; height:${r.height / zoomScale}px`}
       ></div>
     {/each}
+    {#if selectedBlockRect}
+      <div
+        class="row-highlight selected-block-highlight"
+        style={`top:${selectedBlockRect.top / zoomScale}px; left:${selectedBlockRect.left / zoomScale}px; width:${selectedBlockRect.width / zoomScale}px; height:${selectedBlockRect.height / zoomScale}px`}
+      ></div>
+    {/if}
     {#if dropTargetRect}
       <div
         class="row-highlight"
@@ -2209,7 +2903,7 @@
           aria-label={handleFormatIcon === "table" ? t("block.dragTable") : handleFormatIcon ? t("block.dragOrChange") : t("block.drag")}
           onmousedown={preventBlur}
           onpointerdown={onDragHandlePointerDown}
-          oncontextmenu={onDragHandleContextMenu}
+          onclick={(e) => e.stopPropagation()}
         >
           <Icon name="grip" size={handleBtnSize === 30 ? 20 : 18} />
         </button>
@@ -2228,7 +2922,86 @@
     {#if dropIndicatorTop !== null}
       <div class="block-drop-indicator" style={`top:${dropIndicatorTop / zoomScale}px`}></div>
     {/if}
+    {#if selectionToolbar && !highlightPickerOpen}
+      <div
+        class="selection-toolbar"
+        style={`top:${selectionToolbar.top / zoomScale}px; left:${selectionToolbar.left / zoomScale}px`}
+      >
+        <button
+          class="selection-toolbar-btn"
+          title={t("editor.bold")}
+          aria-label={t("editor.bold")}
+          onmousedown={preventBlur}
+          onclick={(e) => toggleInlineFormat(e, "bold")}
+        >
+          <Icon name="bold" size={16} />
+        </button>
+        <button
+          class="selection-toolbar-btn"
+          title={t("editor.italic")}
+          aria-label={t("editor.italic")}
+          onmousedown={preventBlur}
+          onclick={(e) => toggleInlineFormat(e, "italic")}
+        >
+          <Icon name="italic" size={16} />
+        </button>
+        <button
+          class="selection-toolbar-btn"
+          title={t("editor.underline")}
+          aria-label={t("editor.underline")}
+          onmousedown={preventBlur}
+          onclick={(e) => toggleInlineFormat(e, "underline")}
+        >
+          <Icon name="underline" size={16} />
+        </button>
+        <button
+          class="selection-toolbar-btn"
+          title={t("editor.wavyUnderline")}
+          aria-label={t("editor.wavyUnderline")}
+          onmousedown={preventBlur}
+          onclick={(e) => toggleInlineFormat(e, "wavyUnderline")}
+        >
+          <Icon name="wavy-underline" size={16} />
+        </button>
+        <button
+          class="selection-toolbar-btn"
+          title={t("editor.highlight")}
+          aria-label={t("editor.highlight")}
+          onmousedown={preventBlur}
+          onclick={openHighlightPicker}
+        >
+          <Icon name="highlighter" size={16} />
+        </button>
+      </div>
+    {/if}
+    {#if highlightPickerOpen}
+      <HighlightColorPicker
+        x={highlightPickerPos.x}
+        y={highlightPickerPos.y}
+        current={highlightCurrentColor}
+        onPick={applyHighlightColor}
+      />
+    {/if}
     {#if tableGutter}
+      {#if !tableAddDragAxis}
+        {#each tableGutter.resizeBoundaries as boundary (boundary.index)}
+          <div
+            class="table-col-resize-hit"
+            class:hovered={hoveredTableResizeBoundary?.index === boundary.index}
+            style={`left:${boundary.x / zoomScale - 5}px; top:${boundary.top / zoomScale}px; height:${(boundary.bottom - boundary.top) / zoomScale}px`}
+            onpointerenter={() => (hoveredTableResizeBoundary = boundary)}
+            onpointerdown={(e) => onTableColResizePointerDown(e, boundary)}
+            role="presentation"
+          ></div>
+        {/each}
+        {#if hoveredTableResizeBoundary || tableColResize}
+          {@const boundary = tableColResize ?? hoveredTableResizeBoundary!}
+          <div
+            class="table-col-resize-indicator"
+            style={`left:${boundary.x / zoomScale}px; top:${boundary.top / zoomScale}px; height:${(boundary.bottom - boundary.top) / zoomScale}px`}
+          ></div>
+        {/if}
+      {/if}
       {#if hoveredRowIndex !== null}
         {@const rowIndex = hoveredRowIndex}
         {@const row = tableGutter.rows[rowIndex]}
@@ -2246,7 +3019,8 @@
       {/if}
       <button
         class="table-gutter-add table-add-row"
-        style={`top:${tableGutter.tableBottom / zoomScale}px; left:${tableGutter.tableLeft / zoomScale}px; width:${(tableGutter.tableRight - tableGutter.tableLeft) / zoomScale}px`}
+        class:hidden={tableAddDragAxis === "row"}
+        style={`top:${tableGutter.tableBottom / zoomScale}px; left:${tableRowStripRect(tableGutter).left / zoomScale}px; width:${tableRowStripRect(tableGutter).width / zoomScale}px`}
         title={t("table.addRow")}
         aria-label={t("table.addRow")}
         onmousedown={preventBlur}
@@ -2271,7 +3045,8 @@
       {/if}
       <button
         class="table-gutter-add table-add-col"
-        style={`left:${tableGutter.tableRight / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px`}
+        class:hidden={tableAddDragAxis === "col"}
+        style={`left:${tableVisibleRect(tableGutter).right / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px`}
         title={t("table.addCol")}
         aria-label={t("table.addCol")}
         onmousedown={preventBlur}
@@ -2280,38 +3055,79 @@
         <Icon name="plus" size={13} />
       </button>
       {#if tableRowAdjust}
-        {@const rowH = tableGutter.rows.length > 0 ? (tableGutter.tableBottom - tableGutter.tableTop) / tableGutter.rows.length : 32}
+        {@const rowPreview = rowPreviewHeights(tableGutter, tableRowAdjust)}
+        {@const rowPreviewHeight = sumSizes(rowPreview)}
+        {@const visibleTable = tableVisibleRect(tableGutter)}
         {#if tableRowAdjust.removing}
           <div
-            class="table-resize-remove"
-            style={`top:${(tableGutter.tableBottom - rowH * tableRowAdjust.count) / zoomScale}px; left:${tableGutter.tableLeft / zoomScale}px; width:${(tableGutter.tableRight - tableGutter.tableLeft) / zoomScale}px; height:${(rowH * tableRowAdjust.count) / zoomScale}px`}
-          ></div>
+            class="table-resize-remove table-preview-grid"
+            style={`top:${(tableGutter.tableBottom - rowPreviewHeight) / zoomScale}px; left:${visibleTable.left / zoomScale}px; width:${visibleTable.width / zoomScale}px; height:${rowPreviewHeight / zoomScale}px`}
+          >
+            {#each visibleColumnOffsets(tableGutter, visibleTable) as x}
+              <span class="table-preview-vline" style={`left:${x / zoomScale}px`}></span>
+            {/each}
+            {#each internalOffsets(rowPreview) as y}
+              <span class="table-preview-hline" style={`top:${y / zoomScale}px`}></span>
+            {/each}
+          </div>
         {:else}
           <div
-            class="table-resize-ghost"
-            style={`top:${tableGutter.tableBottom / zoomScale}px; left:${tableGutter.tableLeft / zoomScale}px; width:${(tableGutter.tableRight - tableGutter.tableLeft) / zoomScale}px; height:${(rowH * tableRowAdjust.count) / zoomScale}px`}
-          ></div>
+            class="table-resize-ghost table-preview-grid"
+            style={`top:${tableGutter.tableBottom / zoomScale}px; left:${visibleTable.left / zoomScale}px; width:${visibleTable.width / zoomScale}px; height:${rowPreviewHeight / zoomScale}px`}
+          >
+            {#each visibleColumnOffsets(tableGutter, visibleTable) as x}
+              <span class="table-preview-vline" style={`left:${x / zoomScale}px`}></span>
+            {/each}
+            {#each internalOffsets(rowPreview) as y}
+              <span class="table-preview-hline" style={`top:${y / zoomScale}px`}></span>
+            {/each}
+          </div>
         {/if}
       {/if}
       {#if tableColAdjust}
-        {@const colW = tableGutter.cols.length > 0 ? (tableGutter.tableRight - tableGutter.tableLeft) / tableGutter.cols.length : 80}
+        {@const colPreview = colPreviewWidths(tableGutter, tableColAdjust)}
+        {@const colPreviewWidth = sumSizes(colPreview)}
+        {@const visibleTable = tableVisibleRect(tableGutter)}
         {#if tableColAdjust.removing}
           <div
-            class="table-resize-remove"
-            style={`left:${(tableGutter.tableRight - colW * tableColAdjust.count) / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px; width:${(colW * tableColAdjust.count) / zoomScale}px`}
-          ></div>
+            class="table-resize-remove table-preview-grid"
+            style={`left:${Math.max(visibleTable.left, visibleTable.right - colPreviewWidth) / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px; width:${Math.min(colPreviewWidth, visibleTable.width) / zoomScale}px`}
+          >
+            {#each internalOffsets(colPreview) as x}
+              <span class="table-preview-vline" style={`left:${x / zoomScale}px`}></span>
+            {/each}
+            {#each internalOffsets(tableGutter.rowHeights) as y}
+              <span class="table-preview-hline" style={`top:${y / zoomScale}px`}></span>
+            {/each}
+          </div>
         {:else}
           <div
-            class="table-resize-ghost"
-            style={`left:${tableGutter.tableRight / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px; width:${(colW * tableColAdjust.count) / zoomScale}px`}
-          ></div>
+            class="table-resize-ghost table-preview-grid"
+            style={`left:${visibleTable.right / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px; width:${colPreviewWidth / zoomScale}px`}
+          >
+            {#each internalOffsets(colPreview) as x}
+              <span class="table-preview-vline" style={`left:${x / zoomScale}px`}></span>
+            {/each}
+            {#each internalOffsets(tableGutter.rowHeights) as y}
+              <span class="table-preview-hline" style={`top:${y / zoomScale}px`}></span>
+            {/each}
+          </div>
         {/if}
+      {/if}
+      {#if tableDimensionLabel}
+        <div
+          class="table-dimension-label"
+          style={`left:${tableDimensionLabel.left / zoomScale}px; top:${tableDimensionLabel.top / zoomScale}px`}
+        >
+          {tableDimensionLabel.text}
+        </div>
       {/if}
     {/if}
     {#if tableDropRowY !== null && tableGutter}
+      {@const rowStrip = tableVisibleRect(tableGutter)}
       <div
         class="table-drop-indicator table-drop-row"
-        style={`top:${tableDropRowY / zoomScale}px; left:${tableGutter.tableLeft / zoomScale}px; width:${(tableGutter.tableRight - tableGutter.tableLeft) / zoomScale}px`}
+        style={`top:${tableDropRowY / zoomScale}px; left:${rowStrip.left / zoomScale}px; width:${rowStrip.width / zoomScale}px`}
       ></div>
     {/if}
     {#if tableDropColX !== null && tableGutter}
@@ -2338,6 +3154,26 @@
           <span class="switch" class:on={tableHeaderMenu.showHeaderColumn} aria-hidden="true">
             <span class="switch-knob"></span>
           </span>
+        </button>
+        <button class="switch-row" onmousedown={preventBlur} onclick={toggleTableIndexColumn}>
+          <span>{t("table.showIndexColumn")}</span>
+          <span class="switch" class:on={tableHeaderMenu.showIndexColumn} aria-hidden="true">
+            <span class="switch-knob"></span>
+          </span>
+        </button>
+        <div class="menu-sep"></div>
+        <button onmousedown={preventBlur} onclick={distributeColumnsEvenlyAction}>
+          <Icon name="columns" size={14} />
+          <span>{t("table.distributeColumnsEvenly")}</span>
+        </button>
+        <button onmousedown={preventBlur} onclick={fitColumnsToContentAction}>
+          <Icon name="columns" size={14} />
+          <span>{t("table.fitColumnsToContent")}</span>
+        </button>
+        <div class="menu-sep"></div>
+        <button class="menu-danger" onmousedown={preventBlur} onclick={deleteTableFromMenu}>
+          <Icon name="trash" size={14} />
+          <span>{t("table.deleteTable")}</span>
         </button>
       </div>
     {/if}
@@ -2415,9 +3251,23 @@
         {/if}
       </div>
     {/if}
-    <div class="editor-content-col" bind:this={element}></div>
+    <div class="editor-content-col" bind:this={element} oncontextmenu={onEditorContextMenu} role="presentation"></div>
   </div>
 </div>
+{#if grammarMenu}
+  <div class="context-menu grammar-menu" style={`left:${grammarMenu.x}px; top:${grammarMenu.y}px`}>
+    {#if grammarMenu.suggestions.length > 0}
+      {#each grammarMenu.suggestions as suggestion (suggestion)}
+        <button onclick={() => applyGrammarSuggestion(suggestion)}>{suggestion}</button>
+      {/each}
+      <div class="menu-sep"></div>
+    {:else}
+      <div class="grammar-menu-empty">{t("editor.noSuggestions")}</div>
+      <div class="menu-sep"></div>
+    {/if}
+    <button onclick={addGrammarWordToDictionary}>{t("editor.addToDictionary")}</button>
+  </div>
+{/if}
 {#if blockDragGhost}
   <div class="block-drag-ghost" style={`left:${blockDragGhost.x}px; top:${blockDragGhost.y}px`}>
     {blockDragGhost.text}
@@ -2430,12 +3280,32 @@
 {/if}
 
 <style>
+  :global(html.table-col-resizing),
+  :global(html.table-col-resizing *) {
+    cursor: col-resize !important;
+  }
+  :global(html.table-row-resizing),
+  :global(html.table-row-resizing *) {
+    cursor: ns-resize !important;
+  }
+  :global(html.table-col-adding),
+  :global(html.table-col-adding *) {
+    cursor: ew-resize !important;
+  }
+
   .editor-scroll {
     flex: 1;
     min-width: 0;
     min-height: 0;
     overflow-y: auto;
+    overflow-x: hidden;
     background: var(--content-bg);
+    /* Query container for the wide-table breakout below — lets a table's
+       width be computed relative to this pane's actual rendered width
+       (correctly excluding the sidebar/outline beside it) via cqw units,
+       instead of the viewport (100vw would run under those panels) or the
+       narrower 1000px reading column a table would otherwise inherit. */
+    container-type: inline-size;
   }
 
   .editor-content-col-wrapper {
@@ -2444,6 +3314,7 @@
     margin: 0 auto;
     padding: 56px 64px 30vh;
     min-height: 100%;
+    --editor-content-width: max(240px, calc(min(100cqw, 1000px) - 128px));
   }
 
   .handle-group {
@@ -2532,6 +3403,34 @@
   .block-menu :global(svg) {
     color: var(--text-secondary);
     flex-shrink: 0;
+  }
+
+  .selection-toolbar {
+    position: absolute;
+    z-index: 60;
+    transform: translate(-50%, calc(-100% - 8px));
+    display: flex;
+    background: var(--content-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    padding: 3px;
+  }
+  .selection-toolbar-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .selection-toolbar-btn:hover {
+    background: var(--hover-bg-strong);
+    color: var(--text-primary);
   }
 
   .editor-content-col :global(.tiptap) {
@@ -2648,7 +3547,7 @@
     border-radius: 6px;
     padding: 12px 14px;
     overflow-x: auto;
-    font-family: "Cascadia Code", "Consolas", ui-monospace, monospace;
+    font-family: "Cascadia Code", "Consolas", "Microsoft YaHei UI", "PingFang SC", ui-monospace, monospace;
     font-size: 0.9em;
   }
   .editor-content-col :global(.tiptap code) {
@@ -2660,7 +3559,7 @@
        reads as "extra unrelated content got selected" even though the
        actual selected text is exactly the word. */
     padding: 0.1em 0.15em;
-    font-family: "Cascadia Code", "Consolas", ui-monospace, monospace;
+    font-family: "Cascadia Code", "Consolas", "Microsoft YaHei UI", "PingFang SC", ui-monospace, monospace;
     font-size: 0.9em;
   }
   .editor-content-col :global(.tiptap pre code) {
@@ -2690,36 +3589,136 @@
      than the table itself, keeps row/column borders looking continuous
      while only the cell content area scrolls. */
   .editor-content-col :global(.tiptap .tableWrapper) {
-    overflow-x: auto;
+    width: 100%;
+    max-width: 100%;
     margin: 0.6em 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    padding-bottom: 18px;
+    scrollbar-width: auto;
+    scrollbar-color: rgba(55, 53, 47, 0.28) transparent;
+  }
+  .editor-content-col :global(.tiptap .tableWrapper.wide-table-wrapper) {
+    width: 100cqw;
+    max-width: 100cqw;
+    margin-left: calc(50% - 50cqw);
+    margin-right: calc(50% - 50cqw);
+    padding-left: calc(50cqw - 50%);
+    padding-right: 36px;
+    box-sizing: border-box;
   }
   .editor-content-col :global(.tiptap table) {
     border-collapse: collapse;
-    width: 100%;
+    width: max-content;
+    min-width: min(100%, var(--editor-content-width));
   }
+  .editor-content-col :global(.tiptap .tableWrapper::-webkit-scrollbar) {
+    height: 14px;
+  }
+  .editor-content-col :global(.tiptap .tableWrapper::-webkit-scrollbar-track) {
+    background: transparent;
+  }
+  .editor-content-col :global(.tiptap .tableWrapper::-webkit-scrollbar-thumb) {
+    min-width: 48px;
+    border: 4px solid transparent;
+    border-radius: 999px;
+    background: rgba(55, 53, 47, 0.28);
+    background-clip: content-box;
+  }
+  .editor-content-col :global(.tiptap .tableWrapper::-webkit-scrollbar-thumb:hover) {
+    background: rgba(55, 53, 47, 0.38);
+    background-clip: content-box;
+  }
+  .editor-content-col :global(.tiptap .tableWrapper::-webkit-scrollbar-button:horizontal:end:single-button) {
+    width: 14px;
+    background:
+      linear-gradient(45deg, transparent 50%, rgba(55, 53, 47, 0.28) 50%) 4px 4px / 6px 6px no-repeat,
+      linear-gradient(135deg, rgba(55, 53, 47, 0.28) 50%, transparent 50%) 4px 4px / 6px 6px no-repeat;
+  }
+  .editor-content-col :global(.tiptap .tableWrapper::-webkit-scrollbar-button:horizontal:start:single-button) {
+    width: 0;
+  }
+  /* Past 4 columns, cells start getting squeezed illegibly narrow inside
+     the normal 1000px reading column — instead, break the table's own
+     wrapper (TableView always renders one, see editor/nodes/table.ts) out
+     to use the editing pane's full width (see .editor-scroll's
+     container-type above), scrolling horizontally *inside the table*
+     rather than squeezing columns or scrolling the whole page. Tables with
+     4 or fewer columns are untouched, still centered at 1000px like
+     everything else. `left: 50cqw` + a matching negative margin (not
+     percentages, which would resolve against this element's own — much
+     narrower — containing block) is what lets this be positioned relative
+     to .editor-scroll's width specifically. */
   .editor-content-col :global(.tiptap th),
   .editor-content-col :global(.tiptap td) {
     border: 1px solid var(--border);
     padding: 6px 10px;
-    min-width: 80px;
+    min-width: 50px;
     vertical-align: top;
+  }
+  .editor-content-col :global(.tiptap th.active-table-cell),
+  .editor-content-col :global(.tiptap td.active-table-cell) {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  .editor-content-col :global(.tiptap .selectedCell::after) {
+    background: rgba(35, 131, 226, 0.12);
   }
   .editor-content-col :global(.tiptap th) {
     text-align: left;
+    /* The browser's UA stylesheet bolds <th> by default. Every table's
+       first row is always a real <th> regardless of the showHeaderRow
+       toggle (see the comment below), so without this reset every fresh
+       table's first row reads as bold — indistinguishable from an actual
+       `bold` mark, except Ctrl+B/the selection toolbar's bold button can't
+       touch it, since there's no mark there to toggle. Actual header-row
+       styling stays opt-in via the [data-show-header-row] rule below. */
+    font-weight: normal;
   }
   /* The first row is always a real <th> (tiptap-markdown's GFM table
      serializer requires it), but whether it actually *looks* like a header
-     is the table's own showHeaderRow toggle (table-header-menu, right-click
-     the row grip) — off by default, so a fresh table reads as plain cells
+     is the table's own showHeaderRow toggle (table-header-menu, click the
+     drag handle) — off by default, so a fresh table reads as plain cells
      until turned on. Same story for the first column via showHeaderColumn,
      except that one is CSS-only (its cells stay ordinary tableCell nodes). */
   .editor-content-col :global(.tiptap table[data-show-header-row] tr:first-child > th) {
     background: var(--sidebar-bg);
     font-weight: 600;
   }
-  .editor-content-col :global(.tiptap table[data-show-header-column] td:first-child) {
+  /* Row 0's first cell is always a <th> regardless of row 0's own
+     showHeaderRow styling — showHeaderColumn needs to cover it too (the
+     whole column bolds/backgrounds together, header row included), not
+     just the <td>s in every row below it. */
+  .editor-content-col :global(.tiptap table[data-show-header-column] td:first-child),
+  .editor-content-col :global(.tiptap table[data-show-header-column] th:first-child) {
     background: var(--sidebar-bg);
     font-weight: 600;
+  }
+  /* With an index column (see tableOps.ts's setShowIndexColumn), physical
+     column 0 is the index column, not the real first content column — the
+     rule above already covers it (it's still :first-child), this adds the
+     pairing the feature asks for: the *real* first content column (now
+     :nth-child(2), including row 0's own <th> there) switches its header-
+     column look together with it, instead of only the index column
+     changing. */
+  .editor-content-col :global(.tiptap table[data-show-header-column][data-show-index-column] td:nth-child(2)),
+  .editor-content-col :global(.tiptap table[data-show-header-column][data-show-index-column] th:nth-child(2)) {
+    background: var(--sidebar-bg);
+    font-weight: 600;
+  }
+  /* Index column always reads as an auxiliary, non-content column —
+     narrow, centered, muted — regardless of the header-column toggle above
+     (which only adds background/bold on top of this). */
+  .editor-content-col :global(.tiptap table[data-show-index-column] > tbody > tr > :first-child) {
+    width: 40px !important;
+    min-width: 40px;
+    max-width: 40px;
+    text-align: center;
+    color: var(--text-secondary);
+    user-select: none;
+    -webkit-user-select: none;
   }
   .editor-content-col :global(.tiptap table p) {
     margin: 0;
@@ -2775,7 +3774,7 @@
     margin-bottom: 0.2em;
   }
   .editor-content-col :global(.tiptap details.toggle-list > :not(summary)) {
-    padding-left: 1.2em;
+    padding-left: 24px;
   }
   /* Was `display:flex` with the icon as one item and the callout's actual
      content (its real DOM children) implicitly expected to be "the other
@@ -2925,6 +3924,21 @@
   .editor-content-col :global(.tiptap .search-match-active) {
     background: rgba(255, 145, 0, 0.65);
   }
+  /* The Highlight extension's own renderHTML sets an inline
+     background-color (and color: inherit) whenever a mark has a `color`
+     attribute — this is only the fallback for a bare `<mark>` with none,
+     e.g. one created via the extension's built-in `==text==` input rule. */
+  .editor-content-col :global(.tiptap mark) {
+    border-radius: 2px;
+    padding: 0 1px;
+    background: #ffeb3b;
+    color: inherit;
+  }
+  .editor-content-col :global(.tiptap .grammar-error) {
+    text-decoration: underline wavy #e03e3e;
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: 3px;
+  }
   .editor-content-col :global(.tiptap .is-empty::before) {
     content: attr(data-placeholder);
     float: left;
@@ -3003,17 +4017,41 @@
     cursor: pointer;
     z-index: 40;
   }
+  .table-gutter-add :global(svg) {
+    display: block;
+    flex-shrink: 0;
+    opacity: 1;
+  }
   .table-gutter-add:hover {
     background: var(--hover-bg-strong);
     color: var(--text-primary);
   }
+  .table-gutter-add.hidden {
+    visibility: hidden;
+  }
   .table-add-row {
-    height: 14px;
+    height: 18px;
     border-radius: 0 0 4px 4px;
   }
   .table-add-col {
-    width: 14px;
+    width: 18px;
     border-radius: 0 4px 4px 0;
+  }
+  .table-col-resize-hit {
+    position: absolute;
+    width: 10px;
+    margin-left: -5px;
+    cursor: col-resize;
+    z-index: 45;
+  }
+  .table-col-resize-indicator {
+    position: absolute;
+    width: 3px;
+    margin-left: -1.5px;
+    border-radius: 2px;
+    background: var(--accent);
+    pointer-events: none;
+    z-index: 46;
   }
   .table-drop-indicator {
     position: absolute;
@@ -3040,6 +4078,29 @@
     pointer-events: none;
     z-index: 39;
   }
+  .table-preview-grid {
+    overflow: hidden;
+  }
+  .table-preview-vline,
+  .table-preview-hline {
+    position: absolute;
+    pointer-events: none;
+    background: rgba(35, 131, 226, 0.36);
+  }
+  .table-preview-vline {
+    top: 0;
+    bottom: 0;
+    width: 1px;
+  }
+  .table-preview-hline {
+    left: 0;
+    right: 0;
+    height: 1px;
+  }
+  .table-resize-remove .table-preview-vline,
+  .table-resize-remove .table-preview-hline {
+    background: rgba(224, 62, 62, 0.42);
+  }
   .table-resize-remove {
     position: absolute;
     background: rgba(224, 62, 62, 0.16);
@@ -3047,8 +4108,22 @@
     pointer-events: none;
     z-index: 39;
   }
-  /* Right-click menu on the whole-table drag handle (see
-     onDragHandleContextMenu) — same floating-panel look as the sidebar's
+  .table-dimension-label {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    z-index: 60;
+    pointer-events: none;
+    padding: 5px 10px;
+    border-radius: 6px;
+    background: rgba(45, 45, 45, 0.95);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    white-space: nowrap;
+  }
+  /* Menu opened by a plain left-click on the whole-table drag handle (see
+     openTableHeaderMenu) — same floating-panel look as the sidebar's
      tree-node context menu. */
   .context-menu {
     position: fixed;
@@ -3065,6 +4140,34 @@
     min-width: 200px;
     padding: 6px;
     gap: 2px;
+  }
+  .table-header-menu button:not(.switch-row) {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    gap: 10px;
+    border: none;
+    background: none;
+    text-align: left;
+    padding: 6px 8px;
+    font-size: 13px;
+    font-family: inherit;
+    color: var(--text-primary);
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  .table-header-menu button:not(.switch-row):hover {
+    background: var(--hover-bg);
+  }
+  .table-header-menu button:not(.switch-row) :global(svg) {
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+  .table-header-menu button.menu-danger:hover {
+    background: rgba(224, 62, 62, 0.12);
+  }
+  .table-header-menu button.menu-danger:hover :global(svg) {
+    color: #e03e3e;
   }
   /* Row/column insert-above/below (or left/right) + delete popover, opened
      by a plain click on a row/col grip — same look as .block-menu's items. */
@@ -3105,6 +4208,37 @@
     opacity: 0.4;
     cursor: default;
     pointer-events: none;
+  }
+  .grammar-menu {
+    min-width: 160px;
+    padding: 4px;
+    gap: 1px;
+  }
+  .grammar-menu button {
+    display: block;
+    width: 100%;
+    border: none;
+    background: none;
+    text-align: left;
+    padding: 7px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    color: var(--text-primary);
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  .grammar-menu button:hover {
+    background: var(--hover-bg);
+  }
+  .grammar-menu-empty {
+    padding: 7px 10px;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+  }
+  .menu-sep {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 2px;
   }
   .switch-row {
     display: flex;
@@ -3165,6 +4299,9 @@
     background: rgba(35, 131, 226, 0.13);
     border-radius: 6px;
     pointer-events: none;
+  }
+  .selected-block-highlight {
+    right: auto;
   }
   .row-highlight.dragging {
     opacity: 0.55;

@@ -23,6 +23,8 @@ export namespace main {
 	    activeTabPath: string;
 	    language: string;
 	    outlineAutoNumber: boolean;
+	    grammarCheckEnabled: boolean;
+	    customDictionary: string[];
 	    syncEnabled: boolean;
 	    syncURL: string;
 	    syncUsername: string;
@@ -43,6 +45,8 @@ export namespace main {
 	        this.activeTabPath = source["activeTabPath"];
 	        this.language = source["language"];
 	        this.outlineAutoNumber = source["outlineAutoNumber"];
+	        this.grammarCheckEnabled = source["grammarCheckEnabled"];
+	        this.customDictionary = source["customDictionary"];
 	        this.syncEnabled = source["syncEnabled"];
 	        this.syncURL = source["syncURL"];
 	        this.syncUsername = source["syncUsername"];

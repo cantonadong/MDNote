@@ -1,6 +1,9 @@
 import type { Editor } from "@tiptap/core";
 import type { Node as PMNode, Schema } from "@tiptap/pm/model";
 
+const INDEX_COLUMN_WIDTH = 40;
+const NEW_COLUMN_WIDTH = 200;
+
 // Row/column add/delete/reorder for the Table extension, implemented by
 // rebuilding the whole table node and replacing it in one step rather than
 // computing insert/delete positions inside it — simpler to get right, and
@@ -27,8 +30,18 @@ export function rowCount(table: PMNode): number {
   return table.childCount;
 }
 
+// The index column (see setShowIndexColumn below), when present, is always
+// physical grid column 0 in every row — every "logical" column index used
+// throughout this file and by the col-grip UI in Editor.svelte excludes it,
+// so callers never need to know it exists. This is the one place that
+// conversion happens.
+function indexOffset(table: PMNode): number {
+  return table.attrs.showIndexColumn ? 1 : 0;
+}
+
 export function colCount(table: PMNode): number {
-  return table.childCount > 0 ? table.child(0).childCount : 0;
+  const total = table.childCount > 0 ? table.child(0).childCount : 0;
+  return Math.max(0, total - indexOffset(table));
 }
 
 function rowsOf(table: PMNode): PMNode[] {
@@ -41,6 +54,79 @@ function replaceTable(editor: Editor, ref: TableRef, rows: PMNode[]) {
   const { state, view } = editor;
   const newTable = ref.node.type.create(ref.node.attrs, rows, ref.node.marks);
   view.dispatch(state.tr.replaceWith(ref.pos, ref.pos + ref.node.nodeSize, newTable));
+}
+
+export function deleteTable(editor: Editor, ref: TableRef) {
+  const { state, view } = editor;
+  view.dispatch(state.tr.delete(ref.pos, ref.pos + ref.node.nodeSize));
+}
+
+// Sets every cell's colwidth in each (logical, index-column-excluded)
+// column to widths[column] — null clears it back to auto/natural sizing
+// (see TableView's updateColumns: a missing colwidth means that column
+// isn't fixed-width, so the browser's own table layout sizes it from
+// content). Written on every cell in the column, not just row 0, even
+// though TableView only reads row 0's — matches how a real column-resize
+// drag (prosemirror-tables' own columnResizing, unused here since this app
+// never turns resizable on) keeps a column's cells consistent, so nothing
+// downstream has to know only row 0 "really" matters.
+export function setColumnWidths(editor: Editor, ref: TableRef, widths: (number | null)[]) {
+  const off = indexOffset(ref.node);
+  const rows = rowsOf(ref.node).map((row) => {
+    const cells: PMNode[] = [];
+    for (let c = 0; c < row.childCount; c++) {
+      const cell = row.child(c);
+      const logicalIdx = c - off;
+      if (logicalIdx < 0 || logicalIdx >= widths.length) {
+        cells.push(cell.type.create({ ...cell.attrs, colwidth: logicalIdx < 0 ? [INDEX_COLUMN_WIDTH] : cell.attrs.colwidth }, cell.content, cell.marks));
+        continue;
+      }
+      const w = widths[logicalIdx];
+      cells.push(cell.type.create({ ...cell.attrs, colwidth: w ? [w] : null }, cell.content, cell.marks));
+    }
+    return row.type.create(row.attrs, cells, row.marks);
+  });
+  replaceTable(editor, ref, rows);
+}
+
+export function setPhysicalColumnWidths(editor: Editor, ref: TableRef, widths: (number | null)[]) {
+  const rows = rowsOf(ref.node).map((row) => {
+    const cells: PMNode[] = [];
+    for (let c = 0; c < row.childCount; c++) {
+      const cell = row.child(c);
+      const w = widths[c];
+      cells.push(cell.type.create({ ...cell.attrs, colwidth: c === 0 && ref.node.attrs.showIndexColumn ? [INDEX_COLUMN_WIDTH] : w ? [w] : null }, cell.content, cell.marks));
+    }
+    return row.type.create(row.attrs, cells, row.marks);
+  });
+  replaceTable(editor, ref, rows);
+}
+
+// Toggles the index column on/off — inserting or removing physical column 0
+// in every row and flipping the table's showIndexColumn attr in the same
+// step. The newly-added column's numbers are left blank; the IndexColumn
+// ProseMirror plugin (see nodes/table.ts) fills them in as soon as this
+// transaction lands, the same way it keeps them correct after any other
+// row add/delete/move — including ones that don't go through this file at
+// all, like prosemirror-tables' own addRowAfter() (what Tab in the last
+// cell falls back to).
+export function setShowIndexColumn(editor: Editor, ref: TableRef, show: boolean) {
+  const wasOn = !!ref.node.attrs.showIndexColumn;
+  if (show === wasOn) return;
+  const rows = rowsOf(ref.node).map((row) => {
+    const cells: PMNode[] = [];
+    for (let c = 0; c < row.childCount; c++) cells.push(row.child(c));
+    if (show) {
+      const kind = row.child(0)?.type.name === "tableHeader" ? editor.state.schema.nodes.tableHeader : editor.state.schema.nodes.tableCell;
+      const filled = kind.createAndFill();
+      if (filled) cells.unshift(kind.create({ ...filled.attrs, colwidth: [INDEX_COLUMN_WIDTH] }, filled.content, filled.marks));
+    } else {
+      cells.shift();
+    }
+    return row.type.create(row.attrs, cells, row.marks);
+  });
+  const newTable = ref.node.type.create({ ...ref.node.attrs, showIndexColumn: show }, rows, ref.node.marks);
+  editor.view.dispatch(editor.state.tr.replaceWith(ref.pos, ref.pos + ref.node.nodeSize, newTable));
 }
 
 export function setTableHeaderAttrs(
@@ -74,14 +160,16 @@ function isCellEmpty(cell: PMNode): boolean {
   return !hasAtom;
 }
 
-function isRowEmpty(row: PMNode): boolean {
-  for (let c = 0; c < row.childCount; c++) if (!isCellEmpty(row.child(c))) return false;
+function isRowEmpty(row: PMNode, table: PMNode): boolean {
+  const off = indexOffset(table);
+  for (let c = off; c < row.childCount; c++) if (!isCellEmpty(row.child(c))) return false;
   return true;
 }
 
 function isColumnEmpty(table: PMNode, colIndex: number): boolean {
+  const off = indexOffset(table);
   for (let r = 0; r < table.childCount; r++) {
-    const cell = table.child(r).child(colIndex);
+    const cell = table.child(r).child(colIndex + off);
     if (cell && !isCellEmpty(cell)) return false;
   }
   return true;
@@ -96,7 +184,7 @@ export function trailingEmptyRowCount(table: PMNode): number {
   const rows = rowsOf(table);
   let n = 0;
   for (let i = rows.length - 1; i >= 0; i--) {
-    if (!isRowEmpty(rows[i])) break;
+    if (!isRowEmpty(rows[i], table)) break;
     n++;
   }
   return n;
@@ -114,14 +202,14 @@ export function trailingEmptyColumnCount(table: PMNode): number {
 
 export function addRow(editor: Editor, ref: TableRef, atIndex: number) {
   const { schema } = editor.state;
-  const cols = colCount(ref.node);
+  const totalCols = colCount(ref.node) + indexOffset(ref.node);
   const rows = rowsOf(ref.node);
   // Inserting above the current row 0 pushes it down to row 1, so it has to
   // stop being the header row — and the new row takes over that spot instead.
   const insertingHeader = atIndex === 0 && rows.length > 0;
   const kind = insertingHeader ? schema.nodes.tableHeader : schema.nodes.tableCell;
   const cells: PMNode[] = [];
-  for (let c = 0; c < cols; c++) {
+  for (let c = 0; c < totalCols; c++) {
     const cell = kind.createAndFill();
     if (cell) cells.push(cell);
   }
@@ -149,12 +237,12 @@ export function deleteRow(editor: Editor, ref: TableRef, index: number) {
 export function addRows(editor: Editor, ref: TableRef, atIndex: number, count: number) {
   if (count <= 0) return;
   const { schema } = editor.state;
-  const cols = colCount(ref.node);
+  const totalCols = colCount(ref.node) + indexOffset(ref.node);
   const rows = rowsOf(ref.node);
   const newRows: PMNode[] = [];
   for (let i = 0; i < count; i++) {
     const cells: PMNode[] = [];
-    for (let c = 0; c < cols; c++) {
+    for (let c = 0; c < totalCols; c++) {
       const cell = schema.nodes.tableCell.createAndFill();
       if (cell) cells.push(cell);
     }
@@ -182,6 +270,7 @@ export function moveRow(editor: Editor, ref: TableRef, fromIndex: number, toInde
 
 export function addColumn(editor: Editor, ref: TableRef, atIndex: number) {
   const { schema } = editor.state;
+  const off = indexOffset(ref.node);
   const rows = rowsOf(ref.node).map((row) => {
     const cells: PMNode[] = [];
     for (let c = 0; c < row.childCount; c++) cells.push(row.child(c));
@@ -190,7 +279,7 @@ export function addColumn(editor: Editor, ref: TableRef, atIndex: number) {
     // the header row with a stray non-bold cell.
     const kind = row.child(0)?.type.name === "tableHeader" ? schema.nodes.tableHeader : schema.nodes.tableCell;
     const newCell = kind.createAndFill();
-    if (newCell) cells.splice(atIndex, 0, newCell);
+    if (newCell) cells.splice(atIndex + off, 0, kind.create({ ...newCell.attrs, colwidth: [NEW_COLUMN_WIDTH] }, newCell.content, newCell.marks));
     return row.type.create(row.attrs, cells, row.marks);
   });
   replaceTable(editor, ref, rows);
@@ -201,6 +290,7 @@ export function addColumn(editor: Editor, ref: TableRef, atIndex: number) {
 export function addColumns(editor: Editor, ref: TableRef, atIndex: number, count: number) {
   if (count <= 0) return;
   const { schema } = editor.state;
+  const off = indexOffset(ref.node);
   const rows = rowsOf(ref.node).map((row) => {
     const cells: PMNode[] = [];
     for (let c = 0; c < row.childCount; c++) cells.push(row.child(c));
@@ -208,9 +298,9 @@ export function addColumns(editor: Editor, ref: TableRef, atIndex: number, count
     const newCells: PMNode[] = [];
     for (let i = 0; i < count; i++) {
       const cell = kind.createAndFill();
-      if (cell) newCells.push(cell);
+      if (cell) newCells.push(kind.create({ ...cell.attrs, colwidth: [NEW_COLUMN_WIDTH] }, cell.content, cell.marks));
     }
-    cells.splice(atIndex, 0, ...newCells);
+    cells.splice(atIndex + off, 0, ...newCells);
     return row.type.create(row.attrs, cells, row.marks);
   });
   replaceTable(editor, ref, rows);
@@ -220,9 +310,10 @@ export function addColumns(editor: Editor, ref: TableRef, atIndex: number, count
 // this isn't restricted to already-empty columns the way removeColumns is.
 export function deleteColumn(editor: Editor, ref: TableRef, index: number) {
   if (colCount(ref.node) <= 1) return;
+  const off = indexOffset(ref.node);
   const rows = rowsOf(ref.node).map((row) => {
     const cells: PMNode[] = [];
-    for (let c = 0; c < row.childCount; c++) if (c !== index) cells.push(row.child(c));
+    for (let c = 0; c < row.childCount; c++) if (c !== index + off) cells.push(row.child(c));
     return row.type.create(row.attrs, cells, row.marks);
   });
   replaceTable(editor, ref, rows);
@@ -232,9 +323,11 @@ export function removeColumns(editor: Editor, ref: TableRef, fromIndex: number, 
   const total = colCount(ref.node);
   const removable = Math.min(count, total - 1, total - fromIndex, trailingEmptyColumnCount(ref.node));
   if (removable <= 0) return;
+  const off = indexOffset(ref.node);
   const rows = rowsOf(ref.node).map((row) => {
     const cells: PMNode[] = [];
-    for (let c = 0; c < row.childCount; c++) if (c < fromIndex || c >= fromIndex + removable) cells.push(row.child(c));
+    for (let c = 0; c < row.childCount; c++)
+      if (c < fromIndex + off || c >= fromIndex + off + removable) cells.push(row.child(c));
     return row.type.create(row.attrs, cells, row.marks);
   });
   replaceTable(editor, ref, rows);
@@ -242,11 +335,12 @@ export function removeColumns(editor: Editor, ref: TableRef, fromIndex: number, 
 
 export function moveColumn(editor: Editor, ref: TableRef, fromIndex: number, toIndex: number) {
   if (fromIndex === toIndex) return;
+  const off = indexOffset(ref.node);
   const rows = rowsOf(ref.node).map((row) => {
     const cells: PMNode[] = [];
     for (let c = 0; c < row.childCount; c++) cells.push(row.child(c));
-    const [moved] = cells.splice(fromIndex, 1);
-    cells.splice(toIndex, 0, moved);
+    const [moved] = cells.splice(fromIndex + off, 1);
+    cells.splice(toIndex + off, 0, moved);
     return row.type.create(row.attrs, cells, row.marks);
   });
   replaceTable(editor, ref, rows);

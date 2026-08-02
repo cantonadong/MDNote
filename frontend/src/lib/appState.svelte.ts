@@ -83,6 +83,8 @@ class AppState {
     activeTabPath: "",
     language: "system",
     outlineAutoNumber: false,
+    grammarCheckEnabled: false,
+    customDictionary: [],
     syncEnabled: false,
     syncURL: "",
     syncUsername: "",
@@ -528,16 +530,20 @@ class AppState {
   }
 
   // Resolved by WebLinkDialog.svelte, which renders whenever this is set —
-  // see pickWebLink/resolveWebLink/cancelWebLink. initialUrl/initialText are
-  // non-empty when this is editing an existing link (right-click on one)
-  // rather than inserting a new one.
+  // see pickWebLink/resolveWebLink/cancelWebLink/unlinkWebLink.
+  // initialUrl/initialText are non-empty when this is editing an existing
+  // link (right-click on one) rather than inserting a new one — only then
+  // does the dialog offer "convert to plain text", which resolves with the
+  // distinct { unlink: true } shape rather than a LinkPick so the caller
+  // (links.ts) can tell "remove this link" apart from "replace it with a
+  // new one" instead of both just being "some LinkPick".
   pendingWebLink = $state<{
-    resolve: (v: LinkPick | null) => void;
+    resolve: (v: LinkPick | { unlink: true } | null) => void;
     initialUrl: string;
     initialText: string;
   } | null>(null);
 
-  pickWebLink(initial?: { url: string; text: string }): Promise<LinkPick | null> {
+  pickWebLink(initial?: { url: string; text: string }): Promise<LinkPick | { unlink: true } | null> {
     return new Promise((resolve) => {
       this.pendingWebLink = { resolve, initialUrl: initial?.url ?? "", initialText: initial?.text ?? "" };
     });
@@ -560,6 +566,12 @@ class AppState {
     const pending = this.pendingWebLink;
     this.pendingWebLink = null;
     pending?.resolve(null);
+  }
+
+  unlinkWebLink() {
+    const pending = this.pendingWebLink;
+    this.pendingWebLink = null;
+    pending?.resolve({ unlink: true });
   }
 
   async createNewPageNear(nearPath: string | null): Promise<LinkPick | null> {
@@ -784,10 +796,18 @@ class AppState {
     this.persistOpenTabs();
   }
 
-  async saveAppSettings(language: LanguageSetting, outlineAutoNumber: boolean) {
+  async saveAppSettings(language: LanguageSetting, outlineAutoNumber: boolean, grammarCheckEnabled: boolean) {
     try {
-      this.settings = await api.saveAppSettings(language, outlineAutoNumber);
+      this.settings = await api.saveAppSettings(language, outlineAutoNumber, grammarCheckEnabled);
       i18n.setLanguage(language);
+    } catch (e) {
+      this.showToast(`${t("toast.saveSettingsFailed")}: ${e}`);
+    }
+  }
+
+  async addDictionaryWord(word: string) {
+    try {
+      this.settings = await api.addDictionaryWord(word);
     } catch (e) {
       this.showToast(`${t("toast.saveSettingsFailed")}: ${e}`);
     }

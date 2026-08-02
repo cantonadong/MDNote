@@ -179,7 +179,7 @@
     {#each appState.tabs as tab (tab.id)}
       <div
         class="tab"
-        class:active={tab.id === appState.activeTabId}
+        class:active={tab.id === appState.activeTabId && !appState.settingsActive}
         class:drag-over={dragOverId === tab.id}
         draggable={renamingId !== tab.id}
         onclick={() => select(tab)}
@@ -318,17 +318,23 @@
   /* Title is centered in the remaining space (the close button is pulled
      out of flow, pinned to the tab's right edge via .tab-close below) so it
      stays centered regardless of tab width instead of hugging the left
-     edge and letting the close button drift wherever the text ends. */
+     edge and letting the close button drift wherever the text ends.
+     Three-column grid rather than a plain centered flex row: the dirty/
+     missing dot lives in the 3rd column, right after the title with its own
+     small gap, but — since columns 1 and 3 are both `1fr` — its presence
+     doesn't change how the *title* column is centered the way stuffing the
+     dot into the same centered flex group used to (that pushed the whole
+     "title + dot" cluster's midpoint left of true center). */
   .tab-title-wrap {
     flex: 1;
     min-width: 0;
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr minmax(0, auto) 1fr;
     align-items: center;
-    justify-content: center;
-    gap: 6px;
     overflow: hidden;
   }
   .tab-title {
+    grid-column: 2;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -351,19 +357,24 @@
   .tabs-end-spacer.drag-over {
     box-shadow: inset 2px 0 0 var(--accent);
   }
-  .dirty-dot {
+  /* Grid column 3 (see .tab-title-wrap) — sits right after the title with
+     a small gap of its own, without being part of the title's centering
+     column. */
+  .dirty-dot,
+  .missing-dot {
+    grid-column: 3;
+    justify-self: start;
+    margin-left: 6px;
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--accent);
     flex-shrink: 0;
   }
+  .dirty-dot {
+    background: var(--accent);
+  }
   .missing-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
     background: #e03e3e;
-    flex-shrink: 0;
   }
   .tab-close {
     position: absolute;

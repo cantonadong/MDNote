@@ -15,6 +15,8 @@ export interface Settings {
   activeTabPath: string;
   language: string;
   outlineAutoNumber: boolean;
+  grammarCheckEnabled: boolean;
+  customDictionary: string[] | null;
   syncEnabled: boolean;
   syncURL: string;
   syncUsername: string;
@@ -96,8 +98,9 @@ export const api = {
   // patch its stored path, but the id never changes).
   ensureLinkID: (path: string): Promise<string> => goApp().EnsureLinkID(path),
   resolveLinkID: (id: string): Promise<string> => goApp().ResolveLinkID(id),
-  saveAppSettings: (language: string, outlineAutoNumber: boolean): Promise<Settings> =>
-    goApp().SaveAppSettings(language, outlineAutoNumber),
+  saveAppSettings: (language: string, outlineAutoNumber: boolean, grammarCheckEnabled: boolean): Promise<Settings> =>
+    goApp().SaveAppSettings(language, outlineAutoNumber, grammarCheckEnabled),
+  addDictionaryWord: (word: string): Promise<Settings> => goApp().AddDictionaryWord(word),
   saveSyncSettings: (
     enabled: boolean,
     url: string,

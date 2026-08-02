@@ -5,15 +5,21 @@
 
   let language = $state<LanguageSetting>((appState.settings.language as LanguageSetting) || "system");
   let outlineAutoNumber = $state(appState.settings.outlineAutoNumber);
+  let grammarCheckEnabled = $state(appState.settings.grammarCheckEnabled);
 
   function setLanguage(v: LanguageSetting) {
     language = v;
-    void appState.saveAppSettings(language, outlineAutoNumber);
+    void appState.saveAppSettings(language, outlineAutoNumber, grammarCheckEnabled);
   }
 
   function toggleOutlineAutoNumber() {
     outlineAutoNumber = !outlineAutoNumber;
-    void appState.saveAppSettings(language, outlineAutoNumber);
+    void appState.saveAppSettings(language, outlineAutoNumber, grammarCheckEnabled);
+  }
+
+  function toggleGrammarCheck() {
+    grammarCheckEnabled = !grammarCheckEnabled;
+    void appState.saveAppSettings(language, outlineAutoNumber, grammarCheckEnabled);
   }
 
   // Cloud sync fields are local drafts, saved only via the explicit Save
@@ -97,6 +103,14 @@
       <label class="toggle-row">
         <input type="checkbox" checked={outlineAutoNumber} onchange={toggleOutlineAutoNumber} />
         <span class="desc">{t("settings.outline.desc")}</span>
+      </label>
+    </section>
+
+    <section>
+      <div class="row-label">{t("settings.grammar.label")}</div>
+      <label class="toggle-row">
+        <input type="checkbox" checked={grammarCheckEnabled} onchange={toggleGrammarCheck} />
+        <span class="desc">{t("settings.grammar.desc")}</span>
       </label>
     </section>
 

@@ -246,7 +246,12 @@ export const LinkClickHandler = Extension.create({
               const currentText = view.state.doc.textBetween(range.from, range.to);
               void appState.pickWebLink({ url: href, text: currentText }).then((picked) => {
                 if (!picked) return;
-                let tr = view.state.tr;
+                const tr = view.state.tr;
+                if ("unlink" in picked) {
+                  tr.removeMark(range.from, range.to, linkType);
+                  view.dispatch(tr);
+                  return;
+                }
                 tr.insertText(picked.title, range.from, range.to);
                 const newTo = range.from + picked.title.length;
                 tr.addMark(range.from, newTo, linkType.create({ href: picked.path }));

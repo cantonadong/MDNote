@@ -39,6 +39,14 @@ type Settings struct {
 	// OutlineAutoNumber toggles sibling sequence numbers (1./2./3.) on
 	// same-level headings in the right-hand outline panel. Default off.
 	OutlineAutoNumber bool `json:"outlineAutoNumber"`
+	// GrammarCheckEnabled toggles the editor's English spelling/grammar
+	// check (red squiggly underline + autocorrect-on-space). Default off.
+	GrammarCheckEnabled bool `json:"grammarCheckEnabled"`
+	// CustomDictionary holds words the user right-clicked "add to
+	// dictionary" on — matched case-sensitively/exactly against the
+	// misspelling scan (see grammarCheck.ts), so it never silently swallows
+	// a different capitalization of the same word.
+	CustomDictionary []string `json:"customDictionary"`
 	// Cloud sync (InfiniCloud via WebDAV) — see sync.go. Stored in plaintext
 	// like everything else in this file (it's a deliberately portable,
 	// hand-editable INI next to the exe, no registry/DPAPI use), so
@@ -104,6 +112,12 @@ func loadSettings() (Settings, error) {
 			s.Language = strings.TrimSpace(value)
 		case "OutlineAutoNumber":
 			s.OutlineAutoNumber = strings.TrimSpace(value) == "true"
+		case "GrammarCheckEnabled":
+			s.GrammarCheckEnabled = strings.TrimSpace(value) == "true"
+		case "DictWord":
+			if v := strings.TrimSpace(value); v != "" {
+				s.CustomDictionary = append(s.CustomDictionary, v)
+			}
 		case "SyncEnabled":
 			s.SyncEnabled = strings.TrimSpace(value) == "true"
 		case "SyncURL":
@@ -111,7 +125,16 @@ func loadSettings() (Settings, error) {
 		case "SyncUsername":
 			s.SyncUsername = strings.TrimSpace(value)
 		case "SyncPassword":
-			s.SyncPassword = strings.TrimSpace(value)
+			// Stored DPAPI-encrypted+base64 (see crypto.go); falls back to
+			// the raw stored value if it doesn't decode/decrypt, so a
+			// config.ini written before encryption existed (plain
+			// SyncPassword=...) still works.
+			raw := strings.TrimSpace(value)
+			if dec, err := unprotectSecret(raw); err == nil {
+				s.SyncPassword = dec
+			} else {
+				s.SyncPassword = raw
+			}
 		case "SyncIntervalMinutes":
 			if n, err := strconv.Atoi(strings.TrimSpace(value)); err == nil {
 				s.SyncIntervalMinutes = n
@@ -145,6 +168,10 @@ func saveSettings(s Settings) error {
 		fmt.Fprintf(&b, "Language=%s\n", s.Language)
 	}
 	fmt.Fprintf(&b, "OutlineAutoNumber=%t\n", s.OutlineAutoNumber)
+	fmt.Fprintf(&b, "GrammarCheckEnabled=%t\n", s.GrammarCheckEnabled)
+	for _, w := range s.CustomDictionary {
+		fmt.Fprintf(&b, "DictWord=%s\n", w)
+	}
 	fmt.Fprintf(&b, "SyncEnabled=%t\n", s.SyncEnabled)
 	if s.SyncURL != "" {
 		fmt.Fprintf(&b, "SyncURL=%s\n", s.SyncURL)
@@ -153,7 +180,11 @@ func saveSettings(s Settings) error {
 		fmt.Fprintf(&b, "SyncUsername=%s\n", s.SyncUsername)
 	}
 	if s.SyncPassword != "" {
-		fmt.Fprintf(&b, "SyncPassword=%s\n", s.SyncPassword)
+		enc, err := protectSecret(s.SyncPassword)
+		if err != nil {
+			return fmt.Errorf("encrypt sync password: %w", err)
+		}
+		fmt.Fprintf(&b, "SyncPassword=%s\n", enc)
 	}
 	if s.SyncIntervalMinutes > 0 {
 		fmt.Fprintf(&b, "SyncIntervalMinutes=%d\n", s.SyncIntervalMinutes)

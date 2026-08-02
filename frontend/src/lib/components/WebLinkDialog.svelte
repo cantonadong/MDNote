@@ -81,6 +81,10 @@
         <input type="text" placeholder={t("weblink.textPlaceholder")} bind:value={text} oninput={onTextInput} />
       </label>
       <div class="actions">
+        {#if editing}
+          <button class="danger" onclick={() => appState.unlinkWebLink()}>{t("weblink.unlink")}</button>
+        {/if}
+        <span class="spacer"></span>
         <button onclick={() => appState.cancelWebLink()}>{t("weblink.cancel")}</button>
         <button class="primary" onclick={submit}>{editing ? t("weblink.save") : t("weblink.insert")}</button>
       </div>
@@ -133,9 +137,20 @@
   }
   .actions {
     display: flex;
-    justify-content: flex-end;
+    align-items: center;
     gap: 8px;
     margin-top: 4px;
+  }
+  .spacer {
+    flex: 1;
+  }
+  .actions button.danger {
+    border-color: transparent;
+    background: none;
+    color: #e03e3e;
+  }
+  .actions button.danger:hover {
+    background: rgba(224, 62, 62, 0.1);
   }
   .actions button {
     border: 1px solid var(--border);
