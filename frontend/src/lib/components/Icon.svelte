@@ -55,6 +55,7 @@
     "text-color": "M12 4 5 20 M12 4l7 16 M8 14h8 M5 20h14",
     "underline-color": "M6 4v7a5 5 0 0 0 10 0V4 M5 20h14 M7 22h10",
     "dot-underline": "M6 4v7a5 5 0 0 0 10 0V4 M7 20h.01 M12 20h.01 M17 20h.01",
+    "clear-formatting": "M4 7V4h13 M10 20h4 M12 4l-4 16 M16 14l4 4 M20 14l-4 4",
   };
 </script>
 

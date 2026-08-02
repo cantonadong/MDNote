@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"runtime/debug"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -55,6 +59,23 @@ var (
 )
 
 const pdfHiddenClassName = "MDNotePdfExportHiddenWindow"
+
+func pdfExportLogf(format string, args ...any) {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		dir = os.TempDir()
+	}
+	logDir := filepath.Join(dir, "MDNote")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(logDir, "pdf-export.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s %s\n", time.Now().Format(time.RFC3339), fmt.Sprintf(format, args...))
+}
 
 // Matches the real Win32 WNDCLASSEXW layout.
 type wndClassExW struct {
@@ -385,8 +406,12 @@ func (a *navArgs) getIsSuccess() bool {
 // constructed for, so QueryInterface always fails, and lifetime is tied to
 // a local Go variable for the whole export rather than real refcounting. --
 
-func comQueryInterfaceStub(_ uintptr, _ uintptr, _ uintptr) uintptr {
-	return uintptr(windows.E_NOINTERFACE)
+func comQueryInterfaceStub(this uintptr, _ uintptr, object uintptr) uintptr {
+	if object == 0 {
+		return uintptr(windows.E_POINTER)
+	}
+	*(*uintptr)(unsafe.Pointer(object)) = this
+	return uintptr(windows.S_OK)
 }
 func comAddRefStub(_ uintptr) uintptr  { return 1 }
 func comReleaseStub(_ uintptr) uintptr { return 1 }
@@ -413,6 +438,16 @@ type controllerCompletedHandler struct {
 
 func controllerCompletedInvoke(this uintptr, errorCode uintptr, result uintptr) uintptr {
 	h := (*controllerCompletedHandler)(unsafe.Pointer(this))
+	pdfExportLogf("controller completed callback error=0x%x result=0x%x", errorCode, result)
+	if result != 0 {
+		p := (*[4]uintptr)(unsafe.Pointer(result))
+		pdfExportLogf("controller result words: [0]=0x%x [1]=0x%x [2]=0x%x [3]=0x%x", p[0], p[1], p[2], p[3])
+		if p[0] != 0 {
+			vt := (*[32]uintptr)(unsafe.Pointer(p[0]))
+			pdfExportLogf("controller vtbl words: [0]=0x%x [1]=0x%x [2]=0x%x [3]=0x%x [4]=0x%x [5]=0x%x [6]=0x%x [7]=0x%x [8]=0x%x [9]=0x%x [10]=0x%x [11]=0x%x [12]=0x%x [13]=0x%x [14]=0x%x [15]=0x%x [16]=0x%x [17]=0x%x [18]=0x%x [19]=0x%x [20]=0x%x [21]=0x%x [22]=0x%x [23]=0x%x [24]=0x%x [25]=0x%x [26]=0x%x [27]=0x%x [28]=0x%x [29]=0x%x [30]=0x%x [31]=0x%x",
+				vt[0], vt[1], vt[2], vt[3], vt[4], vt[5], vt[6], vt[7], vt[8], vt[9], vt[10], vt[11], vt[12], vt[13], vt[14], vt[15], vt[16], vt[17], vt[18], vt[19], vt[20], vt[21], vt[22], vt[23], vt[24], vt[25], vt[26], vt[27], vt[28], vt[29], vt[30], vt[31])
+		}
+	}
 	if result != 0 {
 		h.controller = (*controller)(unsafe.Pointer(result))
 	} else {
@@ -549,14 +584,125 @@ func (a *App) ExportPdf(html string, path string) error {
 
 const pdfStageTimeout = 25 * time.Second
 
+func exportHTMLToPDF(html string, outputPath string) error {
+	return exportHTMLToPDFWithHeadlessBrowser(html, outputPath)
+}
+
+func exportHTMLToPDFWithHeadlessBrowser(html string, outputPath string) error {
+	pdfExportLogf("headless start output=%q htmlBytes=%d", outputPath, len(html))
+	absPath, err := filepath.Abs(outputPath)
+	if err != nil {
+		return err
+	}
+	tmpDir, err := os.MkdirTemp("", "mdnote-pdf-html-*")
+	if err != nil {
+		return fmt.Errorf("创建临时目录失败: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	htmlPath := filepath.Join(tmpDir, "export.html")
+	if err := os.WriteFile(htmlPath, []byte(html), 0o644); err != nil {
+		return fmt.Errorf("写入临时 HTML 失败: %w", err)
+	}
+
+	browser, err := findHeadlessPDFBrowser()
+	if err != nil {
+		return err
+	}
+	fileURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(htmlPath)}).String()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	args := []string{
+		"--headless",
+		"--disable-gpu",
+		"--no-first-run",
+		"--disable-extensions",
+		"--print-to-pdf-no-header",
+		"--print-to-pdf=" + absPath,
+		fileURL,
+	}
+	pdfExportLogf("headless browser=%q", browser)
+	cmd := exec.CommandContext(ctx, browser, args...)
+	cmd.Dir = tmpDir
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		pdfExportLogf("headless timeout")
+		return fmt.Errorf("导出 PDF 超时")
+	}
+	if err != nil {
+		pdfExportLogf("headless failed: %v output=%s", err, string(out))
+		return fmt.Errorf("导出 PDF 失败: %w", err)
+	}
+	if info, statErr := os.Stat(absPath); statErr != nil || info.Size() == 0 {
+		if statErr != nil {
+			pdfExportLogf("headless output missing: %v output=%s", statErr, string(out))
+			return fmt.Errorf("PDF 文件未生成: %w", statErr)
+		}
+		pdfExportLogf("headless output empty output=%s", string(out))
+		return fmt.Errorf("PDF 文件为空")
+	}
+	pdfExportLogf("headless done output=%q", absPath)
+	return nil
+}
+
+func findHeadlessPDFBrowser() (string, error) {
+	candidates := []string{
+		filepath.Join(os.Getenv("ProgramFiles(x86)"), "Microsoft", "Edge", "Application", "msedge.exe"),
+		filepath.Join(os.Getenv("ProgramFiles"), "Microsoft", "Edge", "Application", "msedge.exe"),
+		filepath.Join(os.Getenv("LocalAppData"), "Microsoft", "Edge", "Application", "msedge.exe"),
+		filepath.Join(os.Getenv("ProgramFiles"), "Google", "Chrome", "Application", "chrome.exe"),
+		filepath.Join(os.Getenv("ProgramFiles(x86)"), "Google", "Chrome", "Application", "chrome.exe"),
+		filepath.Join(os.Getenv("LocalAppData"), "Google", "Chrome", "Application", "chrome.exe"),
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	versionedRoots := []string{
+		filepath.Join(os.Getenv("ProgramFiles(x86)"), "Microsoft", "Edge", "Application"),
+		filepath.Join(os.Getenv("ProgramFiles"), "Microsoft", "Edge", "Application"),
+		filepath.Join(os.Getenv("LocalAppData"), "Microsoft", "Edge", "Application"),
+		filepath.Join(os.Getenv("ProgramFiles(x86)"), "Microsoft", "EdgeCore"),
+		filepath.Join(os.Getenv("ProgramFiles"), "Microsoft", "EdgeCore"),
+		filepath.Join(os.Getenv("ProgramFiles(x86)"), "Microsoft", "EdgeWebView", "Application"),
+		filepath.Join(os.Getenv("ProgramFiles"), "Microsoft", "EdgeWebView", "Application"),
+	}
+	for _, root := range versionedRoots {
+		matches, _ := filepath.Glob(filepath.Join(root, "*", "msedge.exe"))
+		for _, match := range matches {
+			if info, err := os.Stat(match); err == nil && !info.IsDir() {
+				return match, nil
+			}
+		}
+	}
+	if path, err := exec.LookPath("msedge.exe"); err == nil {
+		return path, nil
+	}
+	if path, err := exec.LookPath("chrome.exe"); err == nil {
+		return path, nil
+	}
+	return "", fmt.Errorf("未找到 Microsoft Edge 或 Google Chrome，无法导出 PDF")
+}
+
 // exportHTMLToPDF renders html in a throwaway, invisible WebView2 instance
 // and writes the result straight to outputPath. Runs on its own dedicated,
 // locked OS thread since every Win32 window and COM STA object involved is
 // thread-affine — none of it may be touched from whatever goroutine Wails
 // happened to invoke this on.
-func exportHTMLToPDF(html string, outputPath string) error {
+func exportHTMLToPDFWithWebView2(html string, outputPath string) error {
 	resultCh := make(chan error, 1)
 	go func() {
+		debug.SetPanicOnFault(true)
+		defer func() {
+			if r := recover(); r != nil {
+				pdfExportLogf("panic: %v\n%s", r, debug.Stack())
+				resultCh <- fmt.Errorf("PDF 导出崩溃: %v", r)
+			}
+		}()
 		goruntime.LockOSThread()
 		// Deliberately not unlocked afterward: this thread ends up carrying
 		// COM apartment state (CoInitializeEx) tied to the hidden window and
@@ -568,91 +714,123 @@ func exportHTMLToPDF(html string, outputPath string) error {
 }
 
 func doExportHTMLToPDF(html string, outputPath string) error {
+	pdfExportLogf("start output=%q htmlBytes=%d", outputPath, len(html))
 	if initErr := windows.CoInitializeEx(0, windows.COINIT_APARTMENTTHREADED); initErr != nil {
+		pdfExportLogf("CoInitializeEx failed: %v", initErr)
 		return fmt.Errorf("CoInitializeEx: %w", initErr)
 	}
 	defer windows.CoUninitialize()
 
 	hwnd, err := createHiddenWindow()
 	if err != nil {
+		pdfExportLogf("createHiddenWindow failed: %v", err)
 		return err
 	}
 	defer destroyHiddenWindow(hwnd)
+	pdfExportLogf("hidden window created hwnd=0x%x", hwnd)
 
 	userDataDir, err := os.MkdirTemp("", "mdnote-pdf-export-*")
 	if err != nil {
+		pdfExportLogf("MkdirTemp failed: %v", err)
 		return fmt.Errorf("创建临时目录失败: %w", err)
 	}
 	defer os.RemoveAll(userDataDir)
+	pdfExportLogf("userDataDir=%q", userDataDir)
 
 	envHandler := &pdfEnvHandler{}
+	pdfExportLogf("create environment begin")
 	if createErr := webviewloader.CreateCoreWebView2EnvironmentWithOptions(
 		envHandler,
 		webviewloader.WithUserDataFolder(userDataDir),
 	); createErr != nil {
+		pdfExportLogf("create environment call failed: %v", createErr)
 		return fmt.Errorf("创建 WebView2 环境失败: %w", createErr)
 	}
 	if pumpErr := pumpMessagesUntil(&envHandler.done, pdfStageTimeout); pumpErr != nil {
+		pdfExportLogf("create environment timeout/error: %v", pumpErr)
 		return pumpErr
 	}
 	if envHandler.envPtr == nil {
+		pdfExportLogf("create environment completed with nil env: 0x%x", envHandler.errCode)
 		return fmt.Errorf("创建 WebView2 环境失败 (0x%x)", envHandler.errCode)
 	}
 	env := (*environment)(envHandler.envPtr)
 	defer (*comUnknown)(envHandler.envPtr).Release()
+	pdfExportLogf("create environment done env=%p", envHandler.envPtr)
 
 	controllerHandler := newControllerCompletedHandler()
+	pdfExportLogf("create controller begin")
 	if createErr := env.createController(hwnd, controllerHandler); createErr != nil {
+		pdfExportLogf("create controller call failed: %v", createErr)
 		return fmt.Errorf("创建 WebView2 控制器失败: %w", createErr)
 	}
 	if pumpErr := pumpMessagesUntil(&controllerHandler.done, pdfStageTimeout); pumpErr != nil {
+		pdfExportLogf("create controller timeout/error: %v", pumpErr)
 		return pumpErr
 	}
 	if controllerHandler.controller == nil {
+		pdfExportLogf("create controller completed with nil controller: 0x%x", controllerHandler.errCode)
 		return fmt.Errorf("创建 WebView2 控制器失败 (0x%x)", controllerHandler.errCode)
 	}
 	ctrl := controllerHandler.controller
 	defer ctrl.Close()
+	pdfExportLogf("create controller done controller=%p", ctrl)
 
 	wv, err := ctrl.getWebview()
 	if err != nil {
+		pdfExportLogf("GetCoreWebView2 failed: %v", err)
 		return fmt.Errorf("GetCoreWebView2: %w", err)
 	}
+	pdfExportLogf("GetCoreWebView2 done webview=%p", wv)
 
 	navHandler := newNavigationCompletedHandler()
 	if navRegErr := wv.addNavigationCompleted(navHandler); navRegErr != nil {
+		pdfExportLogf("AddNavigationCompleted failed: %v", navRegErr)
 		return fmt.Errorf("AddNavigationCompleted: %w", navRegErr)
 	}
+	pdfExportLogf("NavigateToString begin")
 	if navErr := wv.navigateToString(html); navErr != nil {
+		pdfExportLogf("NavigateToString failed: %v", navErr)
 		return fmt.Errorf("NavigateToString: %w", navErr)
 	}
 	if pumpErr := pumpMessagesUntil(&navHandler.done, pdfStageTimeout); pumpErr != nil {
+		pdfExportLogf("navigation timeout/error: %v", pumpErr)
 		return pumpErr
 	}
 	if navHandler.failed {
+		pdfExportLogf("navigation completed failed")
 		return fmt.Errorf("加载待导出内容失败")
 	}
+	pdfExportLogf("navigation done")
 
 	wv7 := wv.queryWebview7()
 	if wv7 == nil {
+		pdfExportLogf("QueryInterface ICoreWebView2_7 returned nil")
 		return fmt.Errorf("当前 WebView2 运行时版本过旧，不支持导出 PDF，请更新 WebView2 运行时")
 	}
-	defer wv7.Release()
+	defer (*comUnknown)(unsafe.Pointer(wv7)).Release()
+	pdfExportLogf("QueryInterface ICoreWebView2_7 done webview7=%p", wv7)
 
 	absPath, err := filepath.Abs(outputPath)
 	if err != nil {
+		pdfExportLogf("Abs failed: %v", err)
 		return err
 	}
 
 	printHandler := newPrintToPdfCompletedHandler()
+	pdfExportLogf("PrintToPdf begin absPath=%q", absPath)
 	if printErr := wv7.printToPdfToFile(absPath, printHandler); printErr != nil {
+		pdfExportLogf("PrintToPdf call failed: %v", printErr)
 		return fmt.Errorf("PrintToPdf: %w", printErr)
 	}
 	if pumpErr := pumpMessagesUntil(&printHandler.done, pdfStageTimeout); pumpErr != nil {
+		pdfExportLogf("PrintToPdf timeout/error: %v", pumpErr)
 		return pumpErr
 	}
 	if printHandler.failed {
+		pdfExportLogf("PrintToPdf completed failed: 0x%x", printHandler.errCode)
 		return fmt.Errorf("导出 PDF 失败 (0x%x)", printHandler.errCode)
 	}
+	pdfExportLogf("PrintToPdf done")
 	return nil
 }

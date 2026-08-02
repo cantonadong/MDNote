@@ -10,10 +10,8 @@
   import { TaskItem } from "@tiptap/extension-task-item";
   import { Highlight } from "@tiptap/extension-highlight";
   import HighlightColorPicker from "./HighlightColorPicker.svelte";
-  import { Table } from "$lib/editor/nodes/table";
+  import { Table, TableCell, TableHeader } from "$lib/editor/nodes/table";
   import { TableRow } from "@tiptap/extension-table-row";
-  import { TableHeader } from "@tiptap/extension-table-header";
-  import { TableCell } from "@tiptap/extension-table-cell";
   import Icon from "./Icon.svelte";
   import { api } from "$lib/api";
   import { appState, type LinkPick } from "$lib/appState.svelte";
@@ -32,6 +30,7 @@
   import { WavyUnderline, DotUnderline } from "$lib/editor/nodes/wavyUnderline";
   import { TextColor, UnderlineColor } from "$lib/editor/nodes/inlineColor";
   import { JoinAdjacentLists } from "$lib/editor/nodes/joinAdjacentLists";
+  import { EmptyListItemDelete } from "$lib/editor/nodes/emptyListItemDelete";
   import { ToggleList, ToggleSummary } from "$lib/editor/nodes/toggleList";
   import { Callout } from "$lib/editor/nodes/callout";
   import { Columns, Column } from "$lib/editor/nodes/columns";
@@ -74,6 +73,7 @@
   let lastTabId: string | null = null;
 
   let handleTop = $state<number | null>(null);
+  let handleLeft = $state(2);
   let handleHeight = $state(24);
   // Highlights the block a click on its drag handle (⠿, not the "+" button)
   // just acted on — a plain click opens either the "change" block-type menu
@@ -341,6 +341,46 @@
     return node.attrs.showIndexColumn && index === 0 ? TABLE_INDEX_MIN_WIDTH : TABLE_CONTENT_MIN_WIDTH;
   }
 
+  function measureCellNaturalWidth(cell: HTMLElement): number {
+    const table = document.createElement("table");
+    const tbody = document.createElement("tbody");
+    const tr = document.createElement("tr");
+    const clone = cell.cloneNode(true) as HTMLElement;
+    const style = getComputedStyle(cell);
+    for (const prop of [
+      "font",
+      "font-family",
+      "font-size",
+      "font-weight",
+      "letter-spacing",
+      "padding-left",
+      "padding-right",
+      "border-left-width",
+      "border-right-width",
+      "box-sizing",
+      "white-space",
+    ]) {
+      clone.style.setProperty(prop, style.getPropertyValue(prop));
+    }
+    table.style.position = "fixed";
+    table.style.left = "-10000px";
+    table.style.top = "0";
+    table.style.width = "max-content";
+    table.style.minWidth = "0";
+    table.style.tableLayout = "auto";
+    table.style.visibility = "hidden";
+    clone.style.width = "max-content";
+    clone.style.minWidth = "0";
+    clone.style.maxWidth = "none";
+    tr.appendChild(clone);
+    tbody.appendChild(tr);
+    table.appendChild(tbody);
+    document.body.appendChild(table);
+    const width = Math.ceil(clone.getBoundingClientRect().width);
+    table.remove();
+    return width;
+  }
+
   function measureContentColumnWidths(tableEl: HTMLTableElement, node: PMNode): number[] {
     const off = node.attrs.showIndexColumn ? 1 : 0;
     const widths = Array.from({ length: colCount(node) }, () => TABLE_CONTENT_MIN_WIDTH);
@@ -348,21 +388,40 @@
       Array.from(row.cells)
         .slice(off)
         .forEach((cell, i) => {
-          if (i < widths.length) widths[i] = Math.max(widths[i], Math.ceil((cell as HTMLElement).scrollWidth + 2));
+          if (i < widths.length) widths[i] = Math.max(widths[i], measureCellNaturalWidth(cell as HTMLElement));
         });
     });
     return widths;
   }
 
-  function expandColumnWidthsToTarget(widths: number[], target: number): number[] {
-    if (widths.length === 0) return widths;
-    const minTotal = TABLE_CONTENT_MIN_WIDTH * widths.length;
-    const goal = Math.max(target, minTotal);
-    const measuredTotal = sumSizes(widths);
-    if (measuredTotal >= goal) return widths;
-    if (measuredTotal <= 0) return Array.from({ length: widths.length }, () => Math.floor(goal / widths.length));
+  function measurePhysicalColumnContentWidth(tableEl: HTMLTableElement, node: PMNode, index: number): number {
+    let width = minWidthForPhysicalColumn(node, index);
+    Array.from(tableEl.rows).forEach((row) => {
+      const cell = row.cells[index] as HTMLElement | undefined;
+      if (cell) width = Math.max(width, measureCellNaturalWidth(cell));
+    });
+    return width;
+  }
 
-    const scaled = widths.map((w) => Math.max(TABLE_CONTENT_MIN_WIDTH, Math.floor((w / measuredTotal) * goal)));
+  function maxVisibleTableContentWidth(tableEl: HTMLTableElement, node: PMNode): number {
+    const wrapper = tableEl.closest(".tableWrapper") as HTMLElement | null;
+    const rect = wrapper?.getBoundingClientRect() ?? element?.getBoundingClientRect() ?? tableEl.getBoundingClientRect();
+    const style = wrapper ? getComputedStyle(wrapper) : null;
+    const paddingLeft = style ? Number.parseFloat(style.paddingLeft) || 0 : 0;
+    const paddingRight = style ? Number.parseFloat(style.paddingRight) || 0 : 0;
+    const addColGutter = wrapper?.classList.contains("wide-table-wrapper") ? TABLE_ADD_COL_GUTTER : 0;
+    const indexWidth = node.attrs.showIndexColumn ? TABLE_INDEX_MIN_WIDTH : 0;
+    return Math.max(TABLE_CONTENT_MIN_WIDTH, Math.floor(rect.width - paddingLeft - paddingRight - addColGutter - indexWidth));
+  }
+
+  function fitColumnWidthsToVisibleTarget(widths: number[], target: number): number[] {
+    if (widths.length === 0) return widths;
+    const mins = Array.from({ length: widths.length }, () => TABLE_CONTENT_MIN_WIDTH);
+    const minTotal = sumSizes(mins);
+    const measuredTotal = sumSizes(widths);
+    if (measuredTotal <= 0) return mins;
+    const goal = Math.max(minTotal, target);
+    const scaled = widths.map((w, i) => Math.max(mins[i], Math.floor((w / measuredTotal) * goal)));
     let remaining = goal - sumSizes(scaled);
     for (let i = 0; remaining > 0; i = (i + 1) % scaled.length) {
       scaled[i]++;
@@ -438,9 +497,9 @@
     const tablePos = tableHeaderMenu.tablePos;
     const tableEl = tableElAt(tablePos);
     if (!tableEl) return;
-    const contentTarget = currentTableFitTargetWidth() - (node.attrs.showIndexColumn ? TABLE_INDEX_MIN_WIDTH : 0);
+    const contentTarget = maxVisibleTableContentWidth(tableEl, node);
     const contentWidths = measureContentColumnWidths(tableEl, node);
-    setColumnWidths(editor, { node, pos: tablePos }, expandColumnWidthsToTarget(contentWidths, contentTarget));
+    setColumnWidths(editor, { node, pos: tablePos }, fitColumnWidthsToVisibleTarget(contentWidths, contentTarget));
     tableHeaderMenu = null;
     selectedBlockRect = null;
   }
@@ -520,6 +579,27 @@
     tableColMenu = null;
   }
 
+  function clampMenuCoords(x: number, y: number, width = 190, height = 150) {
+    return {
+      x: Math.max(8, Math.min(x, window.innerWidth - width - 8)),
+      y: Math.max(8, Math.min(y, window.innerHeight - height - 8)),
+    };
+  }
+
+  function visibleColGripCenter(gutter: TableGutter, index: number): { x: number; y: number } | null {
+    const col = gutter.cols[index];
+    if (!col || !wrapperEl) return null;
+    const visible = tableVisibleRect(gutter);
+    const left = Math.max(col.left, visible.left);
+    const right = Math.min(col.right, visible.right);
+    if (right <= left) return null;
+    const rect = wrapperEl.getBoundingClientRect();
+    return {
+      x: rect.left + (left + right) / 2,
+      y: rect.top + gutter.tableTop,
+    };
+  }
+
   function updateHoveredGrip(clientX: number, clientY: number) {
     if (!tableGutter || !wrapperEl) {
       hoveredRowIndex = null;
@@ -530,7 +610,12 @@
     const localY = clientY - containerRect.top;
     const localX = clientX - containerRect.left;
     const rowIdx = tableGutter.rows.findIndex((r) => localY >= r.top && localY <= r.bottom);
-    const colIdx = tableGutter.cols.findIndex((c) => localX >= c.left && localX <= c.right);
+    const visible = tableVisibleRect(tableGutter);
+    const colIdx = tableGutter.cols.findIndex((c) => {
+      const left = Math.max(c.left, visible.left);
+      const right = Math.min(c.right, visible.right);
+      return right - left >= 24 && localX >= left && localX <= right;
+    });
     const boundary =
       tableGutter.resizeBoundaries.find((b) => localY >= b.top && localY <= b.bottom && Math.abs(localX - b.x) <= 5) ?? null;
     hoveredRowIndex = rowIdx === -1 ? null : rowIdx;
@@ -970,6 +1055,7 @@
     const startX = e.clientX;
     const startWidths = currentPhysicalColumnWidths(tableEl, ref.node);
     let nextWidths = [...startWidths];
+    let moved = false;
     const previousCursor = document.body.style.cursor;
     tableDragActive = true;
     tableColResize = { x: boundary.x, top: boundary.top, bottom: boundary.bottom };
@@ -982,6 +1068,7 @@
       const rightIndex = boundary.index + 1;
       const leftMin = minWidthForPhysicalColumn(ref!.node, leftIndex);
       const rawDelta = ev.clientX - startX;
+      if (Math.abs(rawDelta) > 3) moved = true;
       nextWidths = [...startWidths];
       let delta: number;
       if (rightIndex < startWidths.length) {
@@ -1006,7 +1093,16 @@
       document.body.style.cursor = previousCursor;
       document.documentElement.classList.remove("table-col-resizing");
       if (!commit) applyLivePhysicalColumnWidths(tableEl!, startWidths);
-      if (commit) setPhysicalColumnWidths(editor!, ref!, nextWidths);
+      if (commit) {
+        if (moved) {
+          setPhysicalColumnWidths(editor!, ref!, nextWidths);
+        } else {
+          applyLivePhysicalColumnWidths(tableEl!, startWidths);
+          const fitted = [...startWidths];
+          fitted[boundary.index] = measurePhysicalColumnContentWidth(tableEl!, ref!.node, boundary.index);
+          setPhysicalColumnWidths(editor!, ref!, fitted);
+        }
+      }
       tableGutter = null;
     }
 
@@ -1138,9 +1234,11 @@
           tableHeaderMenu = null;
           tableRowMenu = null;
           selectedBlockRect = null;
+          const grip = visibleColGripCenter(gutter, index);
+          const menu = clampMenuCoords(grip?.x ?? e.clientX, (grip?.y ?? e.clientY) + 18);
           tableColMenu = {
-            x: e.clientX,
-            y: e.clientY,
+            x: menu.x,
+            y: menu.y,
             tablePos: ref.pos,
             index,
             colCount: colCount(ref.node),
@@ -1305,10 +1403,14 @@
     slashMenuState.itemCount = slashItems.length;
   });
 
-  function syncFromEditor() {
+  function syncContentFromEditor() {
     if (!editor) return;
     const md = (editor.storage as any).markdown.getMarkdown();
     appState.updateActiveContent(md);
+  }
+
+  function syncFromEditor() {
+    syncContentFromEditor();
     refreshDerivedState();
   }
 
@@ -1391,6 +1493,14 @@
     const containerRect = wrapperEl.getBoundingClientRect();
     handleTop = lineRect.top - containerRect.top;
     handleHeight = Math.max(24, lineRect.bottom - lineRect.top);
+    if (hoveredNode?.type.name === "table") {
+      const tableEl = tableElAt(pos);
+      const rect = tableEl?.getBoundingClientRect();
+      const tableLeft = rect ? rect.left - containerRect.left : 64;
+      handleLeft = tableLeft - handleBtnSize * 2 - 12;
+    } else {
+      handleLeft = 2;
+    }
   }
 
   function hideTableBlockHandle() {
@@ -1794,6 +1904,13 @@
       else chain.unsetUnderline().unsetMark("wavyUnderline").setMark("dotUnderline");
     }
     chain.run();
+  }
+
+  function clearSelectionFormatting(e: MouseEvent) {
+    e.stopPropagation();
+    if (!editor) return;
+    const { from, to } = editor.state.selection;
+    editor.chain().focus().setTextSelection({ from, to }).unsetAllMarks().run();
   }
 
   function onEditorScroll() {
@@ -2838,6 +2955,7 @@
         TextColor,
         UnderlineColor,
         JoinAdjacentLists,
+        EmptyListItemDelete,
         TaskList,
         TaskItem,
         Table,
@@ -2860,6 +2978,7 @@
       autofocus: true,
       onUpdate: () => {
         if (switching) return;
+        syncContentFromEditor();
         scheduleSync();
         updateHandle();
         updateSlash();
@@ -3013,7 +3132,7 @@
       ></div>
     {/if}
     {#if handleTop !== null}
-      <div class="handle-group" style={`top:${handleTop / zoomScale}px; height:${handleHeight / zoomScale}px`}>
+      <div class="handle-group" style={`top:${handleTop / zoomScale}px; left:${handleLeft / zoomScale}px; height:${handleHeight / zoomScale}px`}>
         <button
           class="block-handle"
           class:handle-lg={handleBtnSize === 30}
@@ -3139,6 +3258,15 @@
         >
           <Icon name="underline-color" size={16} />
         </button>
+        <button
+          class="selection-toolbar-btn"
+          title={t("editor.clearFormatting")}
+          aria-label={t("editor.clearFormatting")}
+          onmousedown={preventBlur}
+          onclick={clearSelectionFormatting}
+        >
+          <Icon name="clear-formatting" size={16} />
+        </button>
       </div>
     {/if}
     {#if highlightPickerOpen}
@@ -3200,9 +3328,12 @@
       {#if hoveredColIndex !== null}
         {@const colIndex = hoveredColIndex}
         {@const col = tableGutter.cols[colIndex]}
+        {@const visible = tableVisibleRect(tableGutter)}
+        {@const colLeft = Math.max(col.left, visible.left)}
+        {@const colRight = Math.min(col.right, visible.right)}
         <button
           class="table-gutter-btn table-col-grip"
-          style={`left:${(col.left + col.right) / 2 / zoomScale - 15}px; top:${tableGutter.tableTop / zoomScale - 15}px`}
+          style={`left:${(colLeft + colRight) / 2 / zoomScale - 15}px; top:${tableGutter.tableTop / zoomScale - 15}px`}
           title={t("table.colGrip")}
           aria-label={t("table.colGrip")}
           onmousedown={preventBlur}
@@ -3496,10 +3627,10 @@
 
   .handle-group {
     position: absolute;
-    left: 2px;
     display: flex;
     align-items: center;
     gap: 1px;
+    z-index: 90;
   }
   .block-handle,
   .drag-handle {
@@ -3836,9 +3967,7 @@
   }
   .editor-content-col :global(.tiptap th.active-table-cell),
   .editor-content-col :global(.tiptap td.active-table-cell) {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-    box-shadow: inset 0 0 0 1px var(--accent);
+    box-shadow: inset 0 0 0 2px #2383e2;
   }
   .editor-content-col :global(.tiptap .selectedCell::after) {
     background: rgba(35, 131, 226, 0.12);

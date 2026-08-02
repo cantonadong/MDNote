@@ -1,10 +1,20 @@
 import { getHTMLFromFragment } from "@tiptap/core";
 import { Table as BaseTable } from "@tiptap/extension-table";
+import { TableCell as BaseTableCell } from "@tiptap/extension-table-cell";
+import { TableHeader as BaseTableHeader } from "@tiptap/extension-table-header";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import { Fragment } from "@tiptap/pm/model";
 import { Plugin } from "@tiptap/pm/state";
 import type { Transaction } from "@tiptap/pm/state";
 import { t } from "../../i18n.svelte";
+
+export const TableHeader = BaseTableHeader.extend({
+  selectable: false,
+});
+
+export const TableCell = BaseTableCell.extend({
+  selectable: false,
+});
 
 // Adds a per-table "show header row" / "show header column" toggle (see the
 // table-gutter context menu in Editor.svelte). Both are purely visual attrs
@@ -84,9 +94,24 @@ export const Table = BaseTable.extend({
   // ...) and, if resizable, columnResizing(); dropping those would break
   // core table editing entirely, not just the index column.
   addProseMirrorPlugins() {
-    return [...(this.parent?.() ?? []), indexColumnPlugin(), headerRowKindPlugin()];
+    return [plainCellTextSelectionPlugin(), ...(this.parent?.() ?? []), indexColumnPlugin(), headerRowKindPlugin()];
   },
 });
+
+function plainCellTextSelectionPlugin(): Plugin {
+  return new Plugin({
+    props: {
+      handleDOMEvents: {
+        mousedown: (_view, event) => {
+          const target = event.target as HTMLElement | null;
+          if (event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey) return false;
+          if (!target?.closest?.("td, th")) return false;
+          return true;
+        },
+      },
+    },
+  });
+}
 
 interface CellTypeFix {
   from: number; // cell's own start position (its opening token)

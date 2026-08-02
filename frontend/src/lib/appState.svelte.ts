@@ -117,6 +117,7 @@ class AppState {
   pendingClose = $state<PendingClose | null>(null);
   pendingDelete = $state<PendingDelete | null>(null);
   toast = $state<string | null>(null);
+  exportedPdfPath = $state<string | null>(null);
   findReplaceOpen = $state(false);
   // Which field FindReplace.svelte should focus, and a nonce that bumps on
   // every openFindReplace() call so the $effect there refires even when the
@@ -200,6 +201,10 @@ class AppState {
     setTimeout(() => {
       if (this.toast === message) this.toast = null;
     }, 3000);
+  }
+
+  hideExportedPdf() {
+    this.exportedPdfPath = null;
   }
 
   refreshTree() {
@@ -350,6 +355,13 @@ class AppState {
     if (tab) tab.content = content;
   }
 
+  private flushActiveEditorContent() {
+    const tab = this.activeTab;
+    const editor = editorBridge.instance;
+    if (!tab || !editor) return;
+    tab.content = (editor.storage as any).markdown.getMarkdown();
+  }
+
   // Checked when a tab becomes active and right before it's closed, so a
   // stale tab pointing at a file someone deleted/moved outside the app
   // gets flagged instead of silently resurrecting or losing content.
@@ -362,6 +374,7 @@ class AppState {
   }
 
   async saveTab(tab: Tab): Promise<boolean> {
+    if (tab.id === this.activeTabId) this.flushActiveEditorContent();
     if (!tab.path) {
       return this.saveTabAs(tab);
     }
@@ -376,6 +389,7 @@ class AppState {
   }
 
   async saveTabAs(tab: Tab): Promise<boolean> {
+    if (tab.id === this.activeTabId) this.flushActiveEditorContent();
     try {
       const path = await api.saveFileDialog(stripMdExt(tab.title), this.targetDirForNewEntry());
       if (!path) return false;
@@ -393,10 +407,12 @@ class AppState {
   }
 
   async saveActiveTab() {
+    this.flushActiveEditorContent();
     if (this.activeTab) await this.saveTab(this.activeTab);
   }
 
   async saveActiveTabAs() {
+    this.flushActiveEditorContent();
     if (this.activeTab) await this.saveTabAs(this.activeTab);
   }
 
@@ -410,9 +426,11 @@ class AppState {
     try {
       const path = await api.savePdfDialog(`${stripMdExt(tab.title)}.pdf`, this.targetDirForNewEntry());
       if (!path) return;
-      const html = buildExportHtml(stripMdExt(tab.title));
+      const pdfName = await api.basename(path);
+      const html = buildExportHtml(pdfName);
       if (!html) return;
       await api.exportPdf(html, path);
+      this.exportedPdfPath = path;
     } catch (e) {
       this.showToast(`${t("toast.exportPdfFailed")}: ${e}`);
     }
@@ -433,6 +451,7 @@ class AppState {
       await this.requestCloseTabs(queue);
       return;
     }
+    if (tab.id === this.activeTabId) this.flushActiveEditorContent();
     await this.checkMissing(tab);
     if (tab.missing) {
       this.pendingClose = { tabId, missing: true, queue };
