@@ -50,7 +50,11 @@
     ban: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z M5.6 5.6l12.8 12.8",
     bold: "M6 4h7a3.5 3.5 0 0 1 0 7H6Z M6 11h8a3.5 3.5 0 0 1 0 7H6Z",
     italic: "M11 4h6 M7 20h6 M14 4 10 20",
+    strikethrough: "M5 12h14 M8 6h8 M16 6c-1.5-1.4-5.5-1.5-7-.1-1.7 1.6-.8 3.4 1.4 4.1 M9 18h6 M8 18c1.5 1.4 5.5 1.5 7 .1 1.7-1.6.8-3.4-1.4-4.1",
     underline: "M6 4v7a5 5 0 0 0 10 0V4 M5 20h14",
+    "text-color": "M12 4 5 20 M12 4l7 16 M8 14h8 M5 20h14",
+    "underline-color": "M6 4v7a5 5 0 0 0 10 0V4 M5 20h14 M7 22h10",
+    "dot-underline": "M6 4v7a5 5 0 0 0 10 0V4 M7 20h.01 M12 20h.01 M17 20h.01",
   };
 </script>
 
@@ -80,6 +84,16 @@
       <circle cx="15" cy="9" r="1.6" />
       <circle cx="9" cy="15" r="1.6" />
       <circle cx="15" cy="15" r="1.6" />
+    </g>
+  {:else if name === "grip-row"}
+    <g fill="currentColor" stroke="none">
+      <circle cx="12" cy="8" r="2" />
+      <circle cx="12" cy="16" r="2" />
+    </g>
+  {:else if name === "grip-col"}
+    <g fill="currentColor" stroke="none">
+      <circle cx="8" cy="12" r="2" />
+      <circle cx="16" cy="12" r="2" />
     </g>
   {:else if name === "toggle"}
     <!-- Same equilateral triangle as the toggle block's own disclosure

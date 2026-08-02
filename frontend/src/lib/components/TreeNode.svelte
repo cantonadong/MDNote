@@ -12,9 +12,16 @@
   let expanded = $state(false);
   let children = $state<FileEntry[] | null>(null);
   let renaming = $state(false);
-  let renameValue = $state(entry.name);
+  let renameValue = $state("");
   let menuOpen = $state(false);
   let menuPos = $state({ x: 0, y: 0 });
+
+  function focusRenameInput(node: HTMLInputElement) {
+    queueMicrotask(() => {
+      node.focus();
+      node.select();
+    });
+  }
 
   // silent is set for the background refresh below: any tree mutation bumps
   // treeRefreshToken globally, which re-triggers this for every expanded
@@ -191,7 +198,7 @@
           if (e.key === "Escape") cancelRename();
         }}
         onblur={commitRename}
-        autofocus
+        use:focusRenameInput
       />
     {:else}
       <span class="row-label">

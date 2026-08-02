@@ -7,11 +7,15 @@
     x,
     y,
     current = null,
+    noneLabel = t("editor.highlightNone"),
+    customLabel = t("editor.highlightCustom"),
     onPick,
   }: {
     x: number;
     y: number;
     current: string | null;
+    noneLabel?: string;
+    customLabel?: string;
     onPick: (color: string | null) => void;
   } = $props();
 
@@ -30,7 +34,7 @@
 >
   <button class="none-row" class:active={current === null} onclick={() => onPick(null)}>
     <Icon name="ban" size={15} />
-    <span>{t("editor.highlightNone")}</span>
+    <span>{noneLabel}</span>
   </button>
   <div class="swatch-row">
     {#each GRAYSCALE_ROW as color (color)}
@@ -59,8 +63,8 @@
     </div>
   {/each}
   <div class="custom-row">
-    <span class="custom-label">{t("editor.highlightCustom")}</span>
-    <button class="custom-btn" onclick={() => customInput?.click()} title={t("editor.highlightCustom")}>
+    <span class="custom-label">{customLabel}</span>
+    <button class="custom-btn" onclick={() => customInput?.click()} title={customLabel}>
       <Icon name="plus" size={14} />
     </button>
     <input

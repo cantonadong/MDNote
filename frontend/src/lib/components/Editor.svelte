@@ -29,7 +29,8 @@
     addCustomDictionaryWord,
     findDictionaryCaseMatch,
   } from "$lib/editor/grammar/spellCheck";
-  import { WavyUnderline } from "$lib/editor/nodes/wavyUnderline";
+  import { WavyUnderline, DotUnderline } from "$lib/editor/nodes/wavyUnderline";
+  import { TextColor, UnderlineColor } from "$lib/editor/nodes/inlineColor";
   import { JoinAdjacentLists } from "$lib/editor/nodes/joinAdjacentLists";
   import { ToggleList, ToggleSummary } from "$lib/editor/nodes/toggleList";
   import { Callout } from "$lib/editor/nodes/callout";
@@ -318,6 +319,16 @@
   const TABLE_NEW_COLUMN_WIDTH = 200;
   const TABLE_ADD_COL_GUTTER = 36;
 
+  function currentTableFitTargetWidth() {
+    return Math.max(240, Math.floor(element?.getBoundingClientRect().width || 872));
+  }
+
+  function defaultTableColumnWidths() {
+    const total = currentTableFitTargetWidth();
+    const base = Math.floor(total / 3);
+    return [base + (total % 3 > 0 ? 1 : 0), base + (total % 3 > 1 ? 1 : 0), base];
+  }
+
   function physicalColCount(node: PMNode): number {
     return node.childCount > 0 ? node.child(0).childCount : 0;
   }
@@ -341,6 +352,23 @@
         });
     });
     return widths;
+  }
+
+  function expandColumnWidthsToTarget(widths: number[], target: number): number[] {
+    if (widths.length === 0) return widths;
+    const minTotal = TABLE_CONTENT_MIN_WIDTH * widths.length;
+    const goal = Math.max(target, minTotal);
+    const measuredTotal = sumSizes(widths);
+    if (measuredTotal >= goal) return widths;
+    if (measuredTotal <= 0) return Array.from({ length: widths.length }, () => Math.floor(goal / widths.length));
+
+    const scaled = widths.map((w) => Math.max(TABLE_CONTENT_MIN_WIDTH, Math.floor((w / measuredTotal) * goal)));
+    let remaining = goal - sumSizes(scaled);
+    for (let i = 0; remaining > 0; i = (i + 1) % scaled.length) {
+      scaled[i]++;
+      remaining--;
+    }
+    return scaled;
   }
 
   function currentPhysicalColumnWidths(tableEl: HTMLTableElement, node: PMNode): number[] {
@@ -397,6 +425,22 @@
     // contentDOM, so mutating them directly is safe the same way
     // syncTableHeaderAttrs's table-level attribute writes are: ProseMirror's
     // mutation observer only watches contentDOM.
+    tableHeaderMenu = null;
+    selectedBlockRect = null;
+  }
+
+  function fitTableToWidthAction() {
+    if (!editor || !tableHeaderMenu) return;
+    const node = editor.state.doc.nodeAt(tableHeaderMenu.tablePos);
+    if (!node || node.type.name !== "table") return;
+    const cols = colCount(node);
+    if (cols <= 0) return;
+    const tablePos = tableHeaderMenu.tablePos;
+    const tableEl = tableElAt(tablePos);
+    if (!tableEl) return;
+    const contentTarget = currentTableFitTargetWidth() - (node.attrs.showIndexColumn ? TABLE_INDEX_MIN_WIDTH : 0);
+    const contentWidths = measureContentColumnWidths(tableEl, node);
+    setColumnWidths(editor, { node, pos: tablePos }, expandColumnWidthsToTarget(contentWidths, contentTarget));
     tableHeaderMenu = null;
     selectedBlockRect = null;
   }
@@ -982,8 +1026,11 @@
     const gutter = tableGutter;
     const mids = gutter.rows.map((r) => (r.top + r.bottom) / 2);
     const containerTop = wrapperEl.getBoundingClientRect().top;
+    const previousCursor = document.body.style.cursor;
     let started = false;
     let slot = index;
+    document.body.style.cursor = "grabbing";
+    document.documentElement.classList.add("table-grip-dragging");
 
     function onMove(ev: PointerEvent) {
       ev.preventDefault();
@@ -1013,6 +1060,8 @@
       tableDragActive = false;
       tableDropRowY = null;
       tableDragLabel = null;
+      document.body.style.cursor = previousCursor;
+      document.documentElement.classList.remove("table-grip-dragging");
       if (started) {
         const ref = currentTableRef();
         if (ref) tableMoveRow(editor!, ref, index, slotToTargetIndex(slot, index));
@@ -1046,8 +1095,11 @@
     const gutter = tableGutter;
     const mids = gutter.cols.map((c) => (c.left + c.right) / 2);
     const containerLeft = wrapperEl.getBoundingClientRect().left;
+    const previousCursor = document.body.style.cursor;
     let started = false;
     let slot = index;
+    document.body.style.cursor = "grabbing";
+    document.documentElement.classList.add("table-grip-dragging");
 
     function onMove(ev: PointerEvent) {
       ev.preventDefault();
@@ -1072,6 +1124,8 @@
       tableDragActive = false;
       tableDropColX = null;
       tableDragLabel = null;
+      document.body.style.cursor = previousCursor;
+      document.documentElement.classList.remove("table-grip-dragging");
       if (started) {
         const ref = currentTableRef();
         if (ref) tableMoveColumn(editor!, ref, index, slotToTargetIndex(slot, index));
@@ -1317,7 +1371,9 @@
         hoverClientY = null;
       }
     }
-    const pos = hoverBlockPos !== null ? hoverBlockPos : editor.isFocused ? topLevelBlockPos() : null;
+    const cursorBlockPos = editor.isFocused ? topLevelBlockPos() : null;
+    const cursorBlock = cursorBlockPos !== null ? editor.state.doc.nodeAt(cursorBlockPos) : null;
+    const pos = hoverBlockPos !== null ? hoverBlockPos : cursorBlock?.type.name === "table" ? null : cursorBlockPos;
     if (pos === null) {
       if (!menuOpen) handleTop = null;
       return;
@@ -1335,6 +1391,44 @@
     const containerRect = wrapperEl.getBoundingClientRect();
     handleTop = lineRect.top - containerRect.top;
     handleHeight = Math.max(24, lineRect.bottom - lineRect.top);
+  }
+
+  function hideTableBlockHandle() {
+    if (handleFormatIcon !== "table") return;
+    hoverBlockPos = null;
+    hoverClientY = null;
+    handleTop = null;
+    handleFormatIcon = null;
+  }
+
+  function targetKeepsTableHandle(target: EventTarget | null) {
+    const el = target as HTMLElement | null;
+    return !!el?.closest?.(
+      ".handle-group, .table-header-menu, .table-action-menu, .table-gutter-btn, .table-gutter-add, .table-col-resize-hit",
+    );
+  }
+
+  function onWindowClick(e: MouseEvent) {
+    if (menuOpen) closeMenu();
+    if (slashMenuState.open) slashMenuState.close();
+    if (tableHeaderMenu) tableHeaderMenu = null;
+    if (tableRowMenu) tableRowMenu = null;
+    if (tableColMenu) tableColMenu = null;
+    if (highlightPickerOpen) highlightPickerOpen = false;
+    if (grammarMenu) grammarMenu = null;
+    if (selectedBlockRect) selectedBlockRect = null;
+    if (!targetKeepsTableHandle(e.target)) hideTableBlockHandle();
+  }
+
+  function onWindowPointerDown(e: PointerEvent) {
+    const el = e.target as HTMLElement | null;
+    if (tableHeaderMenu && !el?.closest?.(".table-header-menu")) {
+      tableHeaderMenu = null;
+      selectedBlockRect = null;
+    }
+    if (tableRowMenu && !el?.closest?.(".table-action-menu")) tableRowMenu = null;
+    if (tableColMenu && !el?.closest?.(".table-action-menu")) tableColMenu = null;
+    if (!targetKeepsTableHandle(e.target)) hideTableBlockHandle();
   }
 
   // Finds the actual rendered line box the handle should sit next to.
@@ -1533,6 +1627,7 @@
   // coordinates — simpler and exactly matches what's visually selected.
   let selectionToolbar = $state<{ top: number; left: number } | null>(null);
   let highlightPickerOpen = $state(false);
+  let highlightPickerKind = $state<"highlight" | "text" | "underline">("highlight");
   let highlightPickerPos = $state({ x: 0, y: 0 });
   let highlightCurrentColor = $state<string | null>(null);
   // Snapshot of the selection at the moment the toolbar's button is
@@ -1572,24 +1667,58 @@
     };
   }
 
-  function openHighlightPicker(e: MouseEvent) {
+  function openHighlightPicker(e: MouseEvent, kind: "highlight" | "text" | "underline" = "highlight") {
     if (!editor) return;
     e.stopPropagation();
     const { from, to } = editor.state.selection;
     pendingHighlightRange = { from, to };
-    highlightCurrentColor = editor.isActive("highlight") ? ((editor.getAttributes("highlight").color as string) ?? null) : null;
+    highlightPickerKind = kind;
+    if (kind === "highlight") {
+      highlightCurrentColor = editor.isActive("highlight") ? ((editor.getAttributes("highlight").color as string) ?? null) : null;
+    } else if (kind === "text") {
+      highlightCurrentColor = editor.isActive("textColor") ? ((editor.getAttributes("textColor").color as string) ?? null) : null;
+    } else {
+      highlightCurrentColor = editor.isActive("underlineColor") ? ((editor.getAttributes("underlineColor").color as string) ?? null) : null;
+    }
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     highlightPickerPos = { x: rect.left, y: rect.bottom + 6 };
     highlightPickerOpen = true;
+  }
+
+  function rangeHasMark(markName: string, from: number, to: number) {
+    if (!editor) return false;
+    const markType = editor.state.schema.marks[markName];
+    if (!markType) return false;
+    let found = false;
+    editor.state.doc.nodesBetween(from, to, (node) => {
+      if (found) return false;
+      if (node.isText && markType.isInSet(node.marks)) found = true;
+    });
+    return found;
   }
 
   function applyHighlightColor(color: string | null) {
     highlightPickerOpen = false;
     if (!editor || !pendingHighlightRange) return;
     const { from, to } = pendingHighlightRange;
+    const hasUnderline = rangeHasMark("underline", from, to);
+    const hasWavyUnderline = rangeHasMark("wavyUnderline", from, to);
+    const hasDotUnderline = rangeHasMark("dotUnderline", from, to);
     const chain = editor.chain().focus().setTextSelection({ from, to });
-    if (color) chain.setHighlight({ color }).run();
-    else chain.unsetHighlight().run();
+    if (highlightPickerKind === "highlight") {
+      if (color) chain.setHighlight({ color }).run();
+      else chain.unsetHighlight().run();
+    } else if (highlightPickerKind === "text") {
+      if (color) chain.setMark("textColor", { color }).run();
+      else chain.unsetMark("textColor").run();
+    } else {
+      if (color) {
+        chain.setMark("underlineColor", { color });
+        if (!hasUnderline && !hasWavyUnderline && !hasDotUnderline) chain.setMark("wavyUnderline");
+        chain.run();
+      }
+      else chain.unsetMark("underlineColor").run();
+    }
     pendingHighlightRange = null;
   }
 
@@ -1647,14 +1776,23 @@
     await appState.addDictionaryWord(word);
   }
 
-  function toggleInlineFormat(e: MouseEvent, format: "bold" | "italic" | "underline" | "wavyUnderline") {
+  function toggleInlineFormat(e: MouseEvent, format: "bold" | "italic" | "strike" | "underline" | "wavyUnderline" | "dotUnderline") {
     e.stopPropagation();
     if (!editor) return;
     const chain = editor.chain().focus();
     if (format === "bold") chain.toggleBold();
     else if (format === "italic") chain.toggleItalic();
-    else if (format === "underline") chain.toggleUnderline();
-    else chain.toggleMark("wavyUnderline");
+    else if (format === "strike") chain.toggleStrike();
+    else if (format === "underline") {
+      if (editor.isActive("underline")) chain.unsetUnderline();
+      else chain.unsetMark("wavyUnderline").unsetMark("dotUnderline").setUnderline();
+    } else if (format === "wavyUnderline") {
+      if (editor.isActive("wavyUnderline")) chain.unsetMark("wavyUnderline");
+      else chain.unsetUnderline().unsetMark("dotUnderline").setMark("wavyUnderline");
+    } else {
+      if (editor.isActive("dotUnderline")) chain.unsetMark("dotUnderline");
+      else chain.unsetUnderline().unsetMark("wavyUnderline").setMark("dotUnderline");
+    }
     chain.run();
   }
 
@@ -2241,20 +2379,21 @@
       case "codeBlock":
         return { type: "codeBlock" };
       case "table":
+        const tableColumnWidths = defaultTableColumnWidths();
         return {
           type: "table",
           content: [
             {
               type: "tableRow",
-              content: [0, 1, 2].map(() => ({ type: "tableHeader", content: [{ type: "paragraph" }] })),
+              content: tableColumnWidths.map((width) => ({ type: "tableHeader", attrs: { colwidth: [width] }, content: [{ type: "paragraph" }] })),
             },
             {
               type: "tableRow",
-              content: [0, 1, 2].map(() => ({ type: "tableCell", content: [{ type: "paragraph" }] })),
+              content: tableColumnWidths.map((width) => ({ type: "tableCell", attrs: { colwidth: [width] }, content: [{ type: "paragraph" }] })),
             },
             {
               type: "tableRow",
-              content: [0, 1, 2].map(() => ({ type: "tableCell", content: [{ type: "paragraph" }] })),
+              content: tableColumnWidths.map((width) => ({ type: "tableCell", attrs: { colwidth: [width] }, content: [{ type: "paragraph" }] })),
             },
           ],
         };
@@ -2695,6 +2834,9 @@
         GrammarCheck,
         Highlight.configure({ multicolor: true }),
         WavyUnderline,
+        DotUnderline,
+        TextColor,
+        UnderlineColor,
         JoinAdjacentLists,
         TaskList,
         TaskItem,
@@ -2745,6 +2887,7 @@
         queueTableWrapperSync();
       },
       onBlur: () => {
+        hideTableBlockHandle();
         if (!menuOpen && hoverBlockPos === null) handleTop = null;
         slashMenuState.close();
         selectionToolbar = null;
@@ -2831,19 +2974,7 @@
   });
 </script>
 
-<svelte:window
-  onclick={() => {
-    if (menuOpen) closeMenu();
-    if (slashMenuState.open) slashMenuState.close();
-    if (tableHeaderMenu) tableHeaderMenu = null;
-    if (tableRowMenu) tableRowMenu = null;
-    if (tableColMenu) tableColMenu = null;
-    if (highlightPickerOpen) highlightPickerOpen = false;
-    if (grammarMenu) grammarMenu = null;
-    if (selectedBlockRect) selectedBlockRect = null;
-  }}
-  onkeydown={onWindowKeydown}
-/>
+<svelte:window onpointerdown={onWindowPointerDown} onclick={onWindowClick} onblur={hideTableBlockHandle} onkeydown={onWindowKeydown} />
 
 <div
   class="editor-scroll"
@@ -2947,12 +3078,30 @@
         </button>
         <button
           class="selection-toolbar-btn"
-          title={t("editor.underline")}
-          aria-label={t("editor.underline")}
+          title={t("editor.strike")}
+          aria-label={t("editor.strike")}
           onmousedown={preventBlur}
-          onclick={(e) => toggleInlineFormat(e, "underline")}
+          onclick={(e) => toggleInlineFormat(e, "strike")}
         >
-          <Icon name="underline" size={16} />
+          <Icon name="strikethrough" size={16} />
+        </button>
+        <button
+          class="selection-toolbar-btn"
+          title={t("editor.textColor")}
+          aria-label={t("editor.textColor")}
+          onmousedown={preventBlur}
+          onclick={(e) => openHighlightPicker(e, "text")}
+        >
+          <Icon name="text-color" size={16} />
+        </button>
+        <button
+          class="selection-toolbar-btn"
+          title={t("editor.highlight")}
+          aria-label={t("editor.highlight")}
+          onmousedown={preventBlur}
+          onclick={(e) => openHighlightPicker(e, "highlight")}
+        >
+          <Icon name="highlighter" size={16} />
         </button>
         <button
           class="selection-toolbar-btn"
@@ -2965,12 +3114,30 @@
         </button>
         <button
           class="selection-toolbar-btn"
-          title={t("editor.highlight")}
-          aria-label={t("editor.highlight")}
+          title={t("editor.underline")}
+          aria-label={t("editor.underline")}
           onmousedown={preventBlur}
-          onclick={openHighlightPicker}
+          onclick={(e) => toggleInlineFormat(e, "underline")}
         >
-          <Icon name="highlighter" size={16} />
+          <Icon name="underline" size={16} />
+        </button>
+        <button
+          class="selection-toolbar-btn"
+          title={t("editor.dotUnderline")}
+          aria-label={t("editor.dotUnderline")}
+          onmousedown={preventBlur}
+          onclick={(e) => toggleInlineFormat(e, "dotUnderline")}
+        >
+          <Icon name="dot-underline" size={16} />
+        </button>
+        <button
+          class="selection-toolbar-btn"
+          title={t("editor.underlineColor")}
+          aria-label={t("editor.underlineColor")}
+          onmousedown={preventBlur}
+          onclick={(e) => openHighlightPicker(e, "underline")}
+        >
+          <Icon name="underline-color" size={16} />
         </button>
       </div>
     {/if}
@@ -2979,6 +3146,8 @@
         x={highlightPickerPos.x}
         y={highlightPickerPos.y}
         current={highlightCurrentColor}
+        noneLabel={t(highlightPickerKind === "highlight" ? "editor.highlightNone" : "editor.colorNone")}
+        customLabel={t(highlightPickerKind === "highlight" ? "editor.highlightCustom" : "editor.colorCustom")}
         onPick={applyHighlightColor}
       />
     {/if}
@@ -3007,7 +3176,7 @@
         {@const row = tableGutter.rows[rowIndex]}
         <button
           class="table-gutter-btn table-row-grip"
-          style={`top:${(row.top + row.bottom) / 2 / zoomScale - 14}px; left:${tableGutter.tableLeft / zoomScale - 14}px`}
+          style={`top:${(row.top + row.bottom) / 2 / zoomScale - 15}px; left:${tableGutter.tableLeft / zoomScale - 15}px`}
           title={t("table.rowGrip")}
           aria-label={t("table.rowGrip")}
           onmousedown={preventBlur}
@@ -3033,7 +3202,7 @@
         {@const col = tableGutter.cols[colIndex]}
         <button
           class="table-gutter-btn table-col-grip"
-          style={`left:${(col.left + col.right) / 2 / zoomScale - 14}px; top:${tableGutter.tableTop / zoomScale - 14}px`}
+          style={`left:${(col.left + col.right) / 2 / zoomScale - 15}px; top:${tableGutter.tableTop / zoomScale - 15}px`}
           title={t("table.colGrip")}
           aria-label={t("table.colGrip")}
           onmousedown={preventBlur}
@@ -3170,6 +3339,10 @@
           <Icon name="columns" size={14} />
           <span>{t("table.fitColumnsToContent")}</span>
         </button>
+        <button onmousedown={preventBlur} onclick={fitTableToWidthAction}>
+          <Icon name="columns" size={14} />
+          <span>{t("table.fitTableToWidth")}</span>
+        </button>
         <div class="menu-sep"></div>
         <button class="menu-danger" onmousedown={preventBlur} onclick={deleteTableFromMenu}>
           <Icon name="trash" size={14} />
@@ -3291,6 +3464,10 @@
   :global(html.table-col-adding),
   :global(html.table-col-adding *) {
     cursor: ew-resize !important;
+  }
+  :global(html.table-grip-dragging),
+  :global(html.table-grip-dragging *) {
+    cursor: grabbing !important;
   }
 
   .editor-scroll {
@@ -3934,6 +4111,16 @@
     background: #ffeb3b;
     color: inherit;
   }
+  .editor-content-col :global(.tiptap [data-underline-color]) {
+    text-decoration-color: var(--mdnote-underline-color);
+  }
+  .editor-content-col :global(.tiptap [data-underline-color] u),
+  .editor-content-col :global(.tiptap [data-underline-color] [data-wavy]) {
+    text-decoration-color: var(--mdnote-underline-color) !important;
+  }
+  .editor-content-col :global(.tiptap [data-underline-color] [data-dot-underline]) {
+    text-emphasis-color: var(--mdnote-underline-color) !important;
+  }
   .editor-content-col :global(.tiptap .grammar-error) {
     text-decoration: underline wavy #e03e3e;
     text-decoration-thickness: 1.5px;
@@ -3982,8 +4169,8 @@
      on the small 28px target itself. */
   .table-gutter-btn {
     position: absolute;
-    width: 28px;
-    height: 28px;
+    width: 30px;
+    height: 30px;
     display: flex;
     align-items: center;
     justify-content: center;

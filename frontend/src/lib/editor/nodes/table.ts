@@ -257,10 +257,12 @@ function isPlainGfmTable(table: PMNode): boolean {
   if (!firstRow) return true;
   let ok = true;
   (firstRow as PMNode).forEach((cell) => {
+    if (cell.attrs.colwidth) ok = false;
     if (cell.type.name !== "tableHeader" || !isPlainCell(cell)) ok = false;
   });
   for (const row of bodyRows) {
     row.forEach((cell) => {
+      if (cell.attrs.colwidth) ok = false;
       if (cell.type.name === "tableHeader" || !isPlainCell(cell)) ok = false;
     });
   }

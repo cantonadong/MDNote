@@ -14,7 +14,24 @@ export const WavyUnderline = Mark.create({
       "u",
       mergeAttributes(HTMLAttributes, {
         "data-wavy": "",
-        style: "text-decoration-line: underline; text-decoration-style: wavy;",
+        style: "text-decoration-line: underline; text-decoration-style: wavy; text-decoration-color: var(--mdnote-underline-color, currentColor);",
+      }),
+      0,
+    ];
+  },
+});
+
+export const DotUnderline = Mark.create({
+  name: "dotUnderline",
+  parseHTML() {
+    return [{ tag: "span[data-dot-underline]" }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return [
+      "span",
+      mergeAttributes(HTMLAttributes, {
+        "data-dot-underline": "",
+        style: "text-emphasis: filled dot var(--mdnote-underline-color, currentColor); text-emphasis-position: under;",
       }),
       0,
     ];
