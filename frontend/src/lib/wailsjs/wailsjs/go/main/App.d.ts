@@ -6,6 +6,8 @@ export function AddDictionaryWord(arg1:string):Promise<main.Settings>;
 
 export function Basename(arg1:string):Promise<string>;
 
+export function CleanupUnusedImages(arg1:Array<string>):Promise<void>;
+
 export function CreateEntry(arg1:string,arg2:string,arg3:boolean):Promise<main.FileEntry>;
 
 export function DeleteEntry(arg1:string):Promise<void>;
@@ -21,6 +23,8 @@ export function GetInitialFile():Promise<string>;
 export function GetSettings():Promise<main.Settings>;
 
 export function GetSyncStatus():Promise<main.SyncStatus>;
+
+export function ImageDataURL(arg1:string):Promise<string>;
 
 export function ListDir(arg1:string):Promise<Array<main.FileEntry>>;
 
@@ -47,6 +51,12 @@ export function RevealInExplorer(arg1:string):Promise<void>;
 export function SaveAppSettings(arg1:string,arg2:boolean,arg3:boolean):Promise<main.Settings>;
 
 export function SaveFileDialog(arg1:string,arg2:string):Promise<string>;
+
+export function SaveImageAs(arg1:string):Promise<string>;
+
+export function SaveImageAssetFromData(arg1:string,arg2:string):Promise<string>;
+
+export function SaveImageAssetFromPath(arg1:string):Promise<string>;
 
 export function SaveOpenTabs(arg1:Array<string>,arg2:string):Promise<void>;
 

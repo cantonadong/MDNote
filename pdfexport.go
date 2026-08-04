@@ -178,7 +178,7 @@ func pumpMessagesUntil(done *int32, timeout time.Duration) error {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("等待 WebView2 响应超时")
+			return fmt.Errorf(localized("等待 WebView2 响应超时", "Timed out waiting for WebView2"))
 		}
 		r, _, _ := procPeekMessageW.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0, pmRemove)
 		if r != 0 {
@@ -560,10 +560,10 @@ func (h *pdfEnvHandler) EnvironmentCompleted(errorCode webviewloader.HRESULT, en
 // there; otherwise it falls back to the OS default.
 func (a *App) SavePdfDialog(defaultName string, defaultDir string) (string, error) {
 	if defaultName == "" {
-		defaultName = "未命名"
+		defaultName = localized("未命名", "Untitled")
 	}
 	opts := runtime.SaveDialogOptions{
-		Title:           "另存为 PDF",
+		Title:           localized("另存为 PDF", "Save as PDF"),
 		DefaultFilename: defaultName,
 		Filters: []runtime.FileFilter{
 			{DisplayName: "PDF (*.pdf)", Pattern: "*.pdf"},
@@ -596,13 +596,13 @@ func exportHTMLToPDFWithHeadlessBrowser(html string, outputPath string) error {
 	}
 	tmpDir, err := os.MkdirTemp("", "mdnote-pdf-html-*")
 	if err != nil {
-		return fmt.Errorf("创建临时目录失败: %w", err)
+		return fmt.Errorf(localized("创建临时目录失败: %w", "Failed to create temporary folder: %w"), err)
 	}
 	defer os.RemoveAll(tmpDir)
 
 	htmlPath := filepath.Join(tmpDir, "export.html")
 	if err := os.WriteFile(htmlPath, []byte(html), 0o644); err != nil {
-		return fmt.Errorf("写入临时 HTML 失败: %w", err)
+		return fmt.Errorf(localized("写入临时 HTML 失败: %w", "Failed to write temporary HTML: %w"), err)
 	}
 
 	browser, err := findHeadlessPDFBrowser()
@@ -627,19 +627,19 @@ func exportHTMLToPDFWithHeadlessBrowser(html string, outputPath string) error {
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		pdfExportLogf("headless timeout")
-		return fmt.Errorf("导出 PDF 超时")
+		return fmt.Errorf(localized("导出 PDF 超时", "PDF export timed out"))
 	}
 	if err != nil {
 		pdfExportLogf("headless failed: %v output=%s", err, string(out))
-		return fmt.Errorf("导出 PDF 失败: %w", err)
+		return fmt.Errorf(localized("导出 PDF 失败: %w", "PDF export failed: %w"), err)
 	}
 	if info, statErr := os.Stat(absPath); statErr != nil || info.Size() == 0 {
 		if statErr != nil {
 			pdfExportLogf("headless output missing: %v output=%s", statErr, string(out))
-			return fmt.Errorf("PDF 文件未生成: %w", statErr)
+			return fmt.Errorf(localized("PDF 文件未生成: %w", "PDF file was not generated: %w"), statErr)
 		}
 		pdfExportLogf("headless output empty output=%s", string(out))
-		return fmt.Errorf("PDF 文件为空")
+		return fmt.Errorf(localized("PDF 文件为空", "PDF file is empty"))
 	}
 	pdfExportLogf("headless done output=%q", absPath)
 	return nil
@@ -685,7 +685,7 @@ func findHeadlessPDFBrowser() (string, error) {
 	if path, err := exec.LookPath("chrome.exe"); err == nil {
 		return path, nil
 	}
-	return "", fmt.Errorf("未找到 Microsoft Edge 或 Google Chrome，无法导出 PDF")
+	return "", fmt.Errorf(localized("未找到 Microsoft Edge 或 Google Chrome，无法导出 PDF", "Microsoft Edge or Google Chrome was not found, so PDF export is unavailable"))
 }
 
 // exportHTMLToPDF renders html in a throwaway, invisible WebView2 instance
@@ -700,7 +700,7 @@ func exportHTMLToPDFWithWebView2(html string, outputPath string) error {
 		defer func() {
 			if r := recover(); r != nil {
 				pdfExportLogf("panic: %v\n%s", r, debug.Stack())
-				resultCh <- fmt.Errorf("PDF 导出崩溃: %v", r)
+				resultCh <- fmt.Errorf(localized("PDF 导出崩溃: %v", "PDF export crashed: %v"), r)
 			}
 		}()
 		goruntime.LockOSThread()
@@ -732,7 +732,7 @@ func doExportHTMLToPDF(html string, outputPath string) error {
 	userDataDir, err := os.MkdirTemp("", "mdnote-pdf-export-*")
 	if err != nil {
 		pdfExportLogf("MkdirTemp failed: %v", err)
-		return fmt.Errorf("创建临时目录失败: %w", err)
+		return fmt.Errorf(localized("创建临时目录失败: %w", "Failed to create temporary folder: %w"), err)
 	}
 	defer os.RemoveAll(userDataDir)
 	pdfExportLogf("userDataDir=%q", userDataDir)
@@ -744,7 +744,7 @@ func doExportHTMLToPDF(html string, outputPath string) error {
 		webviewloader.WithUserDataFolder(userDataDir),
 	); createErr != nil {
 		pdfExportLogf("create environment call failed: %v", createErr)
-		return fmt.Errorf("创建 WebView2 环境失败: %w", createErr)
+		return fmt.Errorf(localized("创建 WebView2 环境失败: %w", "Failed to create WebView2 environment: %w"), createErr)
 	}
 	if pumpErr := pumpMessagesUntil(&envHandler.done, pdfStageTimeout); pumpErr != nil {
 		pdfExportLogf("create environment timeout/error: %v", pumpErr)
@@ -752,7 +752,7 @@ func doExportHTMLToPDF(html string, outputPath string) error {
 	}
 	if envHandler.envPtr == nil {
 		pdfExportLogf("create environment completed with nil env: 0x%x", envHandler.errCode)
-		return fmt.Errorf("创建 WebView2 环境失败 (0x%x)", envHandler.errCode)
+		return fmt.Errorf(localized("创建 WebView2 环境失败 (0x%x)", "Failed to create WebView2 environment (0x%x)"), envHandler.errCode)
 	}
 	env := (*environment)(envHandler.envPtr)
 	defer (*comUnknown)(envHandler.envPtr).Release()
@@ -762,7 +762,7 @@ func doExportHTMLToPDF(html string, outputPath string) error {
 	pdfExportLogf("create controller begin")
 	if createErr := env.createController(hwnd, controllerHandler); createErr != nil {
 		pdfExportLogf("create controller call failed: %v", createErr)
-		return fmt.Errorf("创建 WebView2 控制器失败: %w", createErr)
+		return fmt.Errorf(localized("创建 WebView2 控制器失败: %w", "Failed to create WebView2 controller: %w"), createErr)
 	}
 	if pumpErr := pumpMessagesUntil(&controllerHandler.done, pdfStageTimeout); pumpErr != nil {
 		pdfExportLogf("create controller timeout/error: %v", pumpErr)
@@ -770,7 +770,7 @@ func doExportHTMLToPDF(html string, outputPath string) error {
 	}
 	if controllerHandler.controller == nil {
 		pdfExportLogf("create controller completed with nil controller: 0x%x", controllerHandler.errCode)
-		return fmt.Errorf("创建 WebView2 控制器失败 (0x%x)", controllerHandler.errCode)
+		return fmt.Errorf(localized("创建 WebView2 控制器失败 (0x%x)", "Failed to create WebView2 controller (0x%x)"), controllerHandler.errCode)
 	}
 	ctrl := controllerHandler.controller
 	defer ctrl.Close()
@@ -799,14 +799,14 @@ func doExportHTMLToPDF(html string, outputPath string) error {
 	}
 	if navHandler.failed {
 		pdfExportLogf("navigation completed failed")
-		return fmt.Errorf("加载待导出内容失败")
+		return fmt.Errorf(localized("加载待导出内容失败", "Failed to load content for export"))
 	}
 	pdfExportLogf("navigation done")
 
 	wv7 := wv.queryWebview7()
 	if wv7 == nil {
 		pdfExportLogf("QueryInterface ICoreWebView2_7 returned nil")
-		return fmt.Errorf("当前 WebView2 运行时版本过旧，不支持导出 PDF，请更新 WebView2 运行时")
+		return fmt.Errorf(localized("当前 WebView2 运行时版本过旧，不支持导出 PDF，请更新 WebView2 运行时", "The current WebView2 runtime is too old for PDF export. Update the WebView2 runtime."))
 	}
 	defer (*comUnknown)(unsafe.Pointer(wv7)).Release()
 	pdfExportLogf("QueryInterface ICoreWebView2_7 done webview7=%p", wv7)
@@ -829,7 +829,7 @@ func doExportHTMLToPDF(html string, outputPath string) error {
 	}
 	if printHandler.failed {
 		pdfExportLogf("PrintToPdf completed failed: 0x%x", printHandler.errCode)
-		return fmt.Errorf("导出 PDF 失败 (0x%x)", printHandler.errCode)
+		return fmt.Errorf(localized("导出 PDF 失败 (0x%x)", "PDF export failed (0x%x)"), printHandler.errCode)
 	}
 	pdfExportLogf("PrintToPdf done")
 	return nil

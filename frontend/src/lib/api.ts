@@ -65,8 +65,8 @@ export const api = {
   // regardless of the Go-side EnableFileDrop option. useDropTarget=false so
   // any drop anywhere in the window counts (no --wails-drop-target CSS
   // marker needed on a specific element).
-  onFileDrop: (handler: (paths: string[]) => void): void => {
-    (window as any).runtime?.OnFileDrop?.((_x: number, _y: number, paths: string[]) => handler(paths), false);
+  onFileDrop: (handler: (paths: string[], coords: { x: number; y: number }) => void): void => {
+    (window as any).runtime?.OnFileDrop?.((x: number, y: number, paths: string[]) => handler(paths, { x, y }), false);
   },
   openFileDialog: (defaultDir: string): Promise<string> => goApp().OpenFileDialog(defaultDir),
   openAnyFileDialog: (): Promise<string> => goApp().OpenAnyFileDialog(),
@@ -100,6 +100,11 @@ export const api = {
   resolveLinkID: (id: string): Promise<string> => goApp().ResolveLinkID(id),
   saveAppSettings: (language: string, outlineAutoNumber: boolean, grammarCheckEnabled: boolean): Promise<Settings> =>
     goApp().SaveAppSettings(language, outlineAutoNumber, grammarCheckEnabled),
+  saveImageAssetFromPath: (src: string): Promise<string> => goApp().SaveImageAssetFromPath(src),
+  saveImageAssetFromData: (data: string, mime: string): Promise<string> => goApp().SaveImageAssetFromData(data, mime),
+  imageDataURL: (path: string): Promise<string> => goApp().ImageDataURL(path),
+  saveImageAs: (src: string): Promise<string> => goApp().SaveImageAs(src),
+  cleanupUnusedImages: (openContents: string[]): Promise<void> => goApp().CleanupUnusedImages(openContents),
   addDictionaryWord: (word: string): Promise<Settings> => goApp().AddDictionaryWord(word),
   saveSyncSettings: (
     enabled: boolean,

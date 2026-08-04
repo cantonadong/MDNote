@@ -22,6 +22,7 @@ class EditorBridge {
   // zoomed DOM element both live there.
   zoom = $state(100);
   resetZoom: (() => void) | null = null;
+  insertImagesFromPaths: ((paths: string[], coords?: { x: number; y: number }) => void) | null = null;
 }
 
 export const editorBridge = new EditorBridge();

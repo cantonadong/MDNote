@@ -35,6 +35,7 @@
   import { Callout } from "$lib/editor/nodes/callout";
   import { Columns, Column } from "$lib/editor/nodes/columns";
   import { PageLink, FileLink, LinkClickHandler } from "$lib/editor/nodes/links";
+  import { MdImage } from "$lib/editor/nodes/image";
   import { SlashTrigger } from "$lib/editor/nodes/slashTrigger";
   import { FullwidthHeadingShortcut } from "$lib/editor/nodes/fullwidthShortcuts";
   import { slashMenuState } from "$lib/editor/slashMenu.svelte";
@@ -225,6 +226,13 @@
   // into a wall of grips the instant the table is hovered at all.
   let hoveredRowIndex = $state<number | null>(null);
   let hoveredColIndex = $state<number | null>(null);
+  let imageMenu = $state<{ pos: number; x: number; y: number; centered: boolean; widthPercent: number; src: string } | null>(null);
+  let imageResizeActive = $state(false);
+  let imageResizeSession: { apply: (clientX: number) => void; finish: (commit: boolean, clientX?: number) => void } | null = null;
+  let suppressImageClickUntil = 0;
+  const IMAGE_MENU_WIDTH = 180;
+  const IMAGE_MENU_HEIGHT = 104;
+  const IMAGE_MENU_GAP = 8;
 
   // Right-click menu on the whole-table drag handle (the generic
   // .drag-handle from the block handle-group, shown whenever the hovered/
@@ -317,6 +325,8 @@
   const TABLE_INDEX_MIN_WIDTH = 40;
   const TABLE_CONTENT_MIN_WIDTH = 50;
   const TABLE_NEW_COLUMN_WIDTH = 200;
+  const TABLE_NEW_ROW_HEIGHT = 32;
+  const TABLE_ADD_ADJUST_DEADZONE = 12;
   const TABLE_ADD_COL_GUTTER = 36;
 
   function currentTableFitTargetWidth() {
@@ -861,7 +871,7 @@
   function rowPreviewHeights(gutter: TableGutter, adjust: { count: number; removing: boolean }): number[] {
     return adjust.removing
       ? gutter.rowHeights.slice(Math.max(0, gutter.rowHeights.length - adjust.count))
-      : repeatedSize(gutter.rowHeights, adjust.count, 32);
+      : repeatedSize([TABLE_NEW_ROW_HEIGHT], adjust.count, TABLE_NEW_ROW_HEIGHT);
   }
 
   function colPreviewWidths(gutter: TableGutter, adjust: { count: number; removing: boolean }): number[] {
@@ -889,11 +899,9 @@
   function onAddRowPointerDown(e: PointerEvent) {
     if (e.button !== 0 || !editor || !wrapperEl || !tableGutter) return;
     const gutter = tableGutter;
-    const rowH = gutter.rows.length > 0 ? (gutter.tableBottom - gutter.tableTop) / gutter.rows.length : 32;
     const startY = e.clientY;
     const previousCursor = document.body.style.cursor;
     let started = false;
-    let steps = 0;
     tableAddDragAxis = "row";
     hoveredTableResizeBoundary = null;
     document.body.style.cursor = "ns-resize";
@@ -905,17 +913,22 @@
         started = true;
         tableDragActive = true;
       }
-      steps = Math.round((ev.clientY - startY) / rowH);
-      if (steps > 0) tableRowAdjust = { count: steps, removing: false };
-      else if (steps < 0) {
+      const delta = ev.clientY - startY;
+      if (delta > TABLE_ADD_ADJUST_DEADZONE) {
+        const count = Math.max(1, Math.ceil(delta / TABLE_NEW_ROW_HEIGHT));
+        tableRowAdjust = { count, removing: false };
+      } else if (delta < -TABLE_ADD_ADJUST_DEADZONE) {
         // Only rows that are already empty can be dragged away — a run of
         // content-filled rows at the bottom stops the preview from growing
         // any further, the same limit removeRows() itself enforces.
         const ref = currentTableRef();
         const cap = ref ? Math.min(gutter.rows.length - 1, trailingEmptyRowCount(ref.node)) : 0;
-        const count = Math.min(-steps, cap);
+        const rowH = gutter.rows.length > 0 ? (gutter.tableBottom - gutter.tableTop) / gutter.rows.length : TABLE_NEW_ROW_HEIGHT;
+        const count = Math.min(Math.max(1, Math.ceil(-delta / rowH)), cap);
         tableRowAdjust = count > 0 ? { count, removing: true } : null;
-      } else tableRowAdjust = null;
+      } else {
+        tableRowAdjust = null;
+      }
       const ref = currentTableRef();
       const adjust = tableRowAdjust;
       const strip = tableRowStripRect(gutter);
@@ -941,13 +954,9 @@
       tableRowAdjust = null;
       tableDimensionLabel = null;
       const ref = currentTableRef();
-      if (ref) {
-        if (!started || steps === 0) {
-          tableAddRow(editor!, ref, rowCount(ref.node));
-        } else if (adjust) {
-          if (adjust.removing) tableRemoveRows(editor!, ref, rowCount(ref.node) - adjust.count, adjust.count);
-          else tableAddRows(editor!, ref, rowCount(ref.node), adjust.count);
-        }
+      if (ref && adjust) {
+        if (adjust.removing) tableRemoveRows(editor!, ref, rowCount(ref.node) - adjust.count, adjust.count);
+        else tableAddRows(editor!, ref, rowCount(ref.node), adjust.count);
       }
       tableGutter = null;
     }
@@ -971,7 +980,6 @@
     const startX = e.clientX;
     const previousCursor = document.body.style.cursor;
     let started = false;
-    let steps = 0;
     tableAddDragAxis = "col";
     hoveredTableResizeBoundary = null;
     document.body.style.cursor = "ew-resize";
@@ -984,17 +992,15 @@
         tableDragActive = true;
       }
       const delta = ev.clientX - startX;
-      if (delta > 0) {
-        steps = Math.max(1, Math.ceil(delta / TABLE_NEW_COLUMN_WIDTH));
-        tableColAdjust = { count: steps, removing: false };
-      } else if (delta < 0) {
+      if (delta > TABLE_ADD_ADJUST_DEADZONE) {
+        const count = Math.max(1, Math.ceil(delta / TABLE_NEW_COLUMN_WIDTH));
+        tableColAdjust = { count, removing: false };
+      } else if (delta < -TABLE_ADD_ADJUST_DEADZONE) {
         const ref = currentTableRef();
         const cap = ref ? Math.min(gutter.cols.length - 1, trailingEmptyColumnCount(ref.node)) : 0;
         const count = trailingWidthStepCount(gutter.contentColWidths, -delta, cap);
-        steps = -count;
         tableColAdjust = count > 0 ? { count, removing: true } : null;
       } else {
-        steps = 0;
         tableColAdjust = null;
       }
       const ref = currentTableRef();
@@ -1022,13 +1028,9 @@
       tableColAdjust = null;
       tableDimensionLabel = null;
       const ref = currentTableRef();
-      if (ref) {
-        if (!started || steps === 0) {
-          tableAddColumn(editor!, ref, colCount(ref.node));
-        } else if (adjust) {
-          if (adjust.removing) tableRemoveColumns(editor!, ref, colCount(ref.node) - adjust.count, adjust.count);
-          else tableAddColumns(editor!, ref, colCount(ref.node), adjust.count);
-        }
+      if (ref && adjust) {
+        if (adjust.removing) tableRemoveColumns(editor!, ref, colCount(ref.node) - adjust.count, adjust.count);
+        else tableAddColumns(editor!, ref, colCount(ref.node), adjust.count);
       }
       tableGutter = null;
     }
@@ -1117,26 +1119,33 @@
     window.addEventListener("pointercancel", onCancel);
   }
 
+  const TABLE_GRIP_DRAG_THRESHOLD = 4;
+
   function onRowGripPointerDown(e: PointerEvent, index: number) {
     if (e.button !== 0 || !editor || !wrapperEl || !tableGutter) return;
+    e.preventDefault();
+    e.stopPropagation();
     const gutter = tableGutter;
     const mids = gutter.rows.map((r) => (r.top + r.bottom) / 2);
     const containerTop = wrapperEl.getBoundingClientRect().top;
     const previousCursor = document.body.style.cursor;
+    const startX = e.clientX;
+    const startY = e.clientY;
     let started = false;
     let slot = index;
     document.body.style.cursor = "grabbing";
     document.documentElement.classList.add("table-grip-dragging");
 
     function onMove(ev: PointerEvent) {
-      ev.preventDefault();
       if (!started) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < TABLE_GRIP_DRAG_THRESHOLD) return;
         started = true;
         tableDragActive = true;
         tableDragLabel = { text: labelForTableRow(index), x: ev.clientX, y: ev.clientY };
       } else if (tableDragLabel) {
         tableDragLabel = { ...tableDragLabel, x: ev.clientX, y: ev.clientY };
       }
+      ev.preventDefault();
       // Both containerTop and ev.clientY are raw viewport coordinates,
       // already reflecting whatever CSS zoom is applied — same "screen
       // delta" space gutter.rows/cols were captured in, so no zoomScale
@@ -1188,24 +1197,29 @@
 
   function onColGripPointerDown(e: PointerEvent, index: number) {
     if (e.button !== 0 || !editor || !wrapperEl || !tableGutter) return;
+    e.preventDefault();
+    e.stopPropagation();
     const gutter = tableGutter;
     const mids = gutter.cols.map((c) => (c.left + c.right) / 2);
     const containerLeft = wrapperEl.getBoundingClientRect().left;
     const previousCursor = document.body.style.cursor;
+    const startX = e.clientX;
+    const startY = e.clientY;
     let started = false;
     let slot = index;
     document.body.style.cursor = "grabbing";
     document.documentElement.classList.add("table-grip-dragging");
 
     function onMove(ev: PointerEvent) {
-      ev.preventDefault();
       if (!started) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < TABLE_GRIP_DRAG_THRESHOLD) return;
         started = true;
         tableDragActive = true;
         tableDragLabel = { text: labelForTableCol(index), x: ev.clientX, y: ev.clientY };
       } else if (tableDragLabel) {
         tableDragLabel = { ...tableDragLabel, x: ev.clientX, y: ev.clientY };
       }
+      ev.preventDefault();
       const localX = ev.clientX - containerLeft;
       slot = slotIndex(mids, localX);
       const boundaryX =
@@ -1524,6 +1538,7 @@
     if (tableHeaderMenu) tableHeaderMenu = null;
     if (tableRowMenu) tableRowMenu = null;
     if (tableColMenu) tableColMenu = null;
+    if (imageMenu) imageMenu = null;
     if (highlightPickerOpen) highlightPickerOpen = false;
     if (grammarMenu) grammarMenu = null;
     if (selectedBlockRect) selectedBlockRect = null;
@@ -1538,7 +1553,336 @@
     }
     if (tableRowMenu && !el?.closest?.(".table-action-menu")) tableRowMenu = null;
     if (tableColMenu && !el?.closest?.(".table-action-menu")) tableColMenu = null;
+    if (imageMenu && !el?.closest?.(".image-menu")) imageMenu = null;
     if (!targetKeepsTableHandle(e.target)) hideTableBlockHandle();
+  }
+
+  function isImagePath(path: string): boolean {
+    return /\.(apng|avif|bmp|gif|jpe?g|png|svg|webp)(?:[?#].*)?$/i.test(path);
+  }
+
+  function looksLikeImageSrc(text: string): boolean {
+    const trimmed = text.trim();
+    return /^(https?:|file:|data:image\/)/i.test(trimmed) ? isImagePath(trimmed) || /^data:image\//i.test(trimmed) : isImagePath(trimmed);
+  }
+
+  async function imageSrcForPath(path: string): Promise<string> {
+    return api.saveImageAssetFromPath(path);
+  }
+
+  function insertImageSrc(src: string) {
+    if (!editor || !src) return;
+    editor.chain().focus().insertContent({ type: "mdImage", attrs: { src } }).run();
+  }
+
+  function placeCursorAtClientPoint(x: number, y: number) {
+    if (!editor) return;
+    const rect = editor.view.dom.getBoundingClientRect();
+    const left = Math.min(Math.max(x, rect.left + 1), rect.right - 1);
+    const top = Math.min(Math.max(y, rect.top + 1), rect.bottom - 1);
+    const result = editor.view.posAtCoords({ left, top });
+    if (result) placeCursorNear(result.pos);
+  }
+
+  async function insertImagesFromPaths(paths: string[], coords?: { x: number; y: number }) {
+    if (coords) placeCursorAtClientPoint(coords.x, coords.y);
+    for (const path of paths.filter(isImagePath)) {
+      try {
+        insertImageSrc(await imageSrcForPath(path));
+      } catch (e) {
+        appState.showToast(`${t("toast.insertImageFailed")}: ${e}`);
+      }
+    }
+  }
+
+  function fileToDataURL(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(reader.error || new Error("read image failed"));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function insertImageFiles(files: File[], coords?: { x: number; y: number }) {
+    if (coords) placeCursorAtClientPoint(coords.x, coords.y);
+    for (const file of files.filter((f) => f.type.startsWith("image/"))) {
+      try {
+        const data = await fileToDataURL(file);
+        insertImageSrc(await api.saveImageAssetFromData(data, file.type));
+      } catch (e) {
+        appState.showToast(`${t("toast.insertImageFailed")}: ${e}`);
+      }
+    }
+  }
+
+  function onEditorPaste(e: ClipboardEvent) {
+    const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
+    if (files.length > 0) {
+      e.preventDefault();
+      void insertImageFiles(files);
+      return;
+    }
+    const text = e.clipboardData?.getData("text/plain") ?? "";
+    if (looksLikeImageSrc(text)) {
+      e.preventDefault();
+      void imageSrcForPath(text.trim()).then(insertImageSrc).catch((err) => appState.showToast(`${t("toast.insertImageFailed")}: ${err}`));
+    }
+  }
+
+  function onEditorDrop(e: DragEvent) {
+    const files = Array.from(e.dataTransfer?.files ?? []).filter((f) => f.type.startsWith("image/"));
+    if (files.length === 0) return;
+    e.preventDefault();
+    void insertImageFiles(files, { x: e.clientX, y: e.clientY });
+  }
+
+  function onEditorClick(e: MouseEvent) {
+    const target = e.target as HTMLElement | null;
+    if (Date.now() < suppressImageClickUntil || target?.closest?.(".image-resize-handle")) {
+      e.stopPropagation();
+      return;
+    }
+    const clickedImageSurface = target?.matches?.("img, figcaption[data-role='missing']") ? target : null;
+    if (!clickedImageSurface) {
+      if (imageMenu) imageMenu = null;
+      return;
+    }
+    const figure = clickedImageSurface.closest?.('figure[data-type="mdnote-image"]') as HTMLElement | null;
+    if (!figure || !editor || !wrapperEl) return;
+    e.stopPropagation();
+    const pos = editor.view.posAtDOM(figure, 0);
+    const node = editor.state.doc.nodeAt(pos);
+    if (!node || node.type.name !== "mdImage") return;
+    showImageMenuForFigure(figure, pos, node);
+  }
+
+  function showImageMenuForFigure(figure: HTMLElement, pos: number, node: PMNode) {
+    if (!wrapperEl) return;
+    const surface = figure.matches('[data-invalid="true"]')
+      ? (figure.querySelector("figcaption[data-role='missing']") as HTMLElement | null)
+      : (figure.querySelector("img") as HTMLElement | null);
+    const rect = (surface ?? figure).getBoundingClientRect();
+    const containerRect = wrapperEl.getBoundingClientRect();
+    imageMenu = {
+      pos,
+      x: rect.left + rect.width / 2 - containerRect.left,
+      y: Math.max(0, rect.top - containerRect.top - IMAGE_MENU_GAP - IMAGE_MENU_HEIGHT),
+      centered: !!node.attrs.centered,
+      widthPercent: Number(node.attrs.widthPercent) || 100,
+      src: String(node.attrs.src || ""),
+    };
+  }
+
+  function toggleImageCentered() {
+    if (!editor || !imageMenu) return;
+    const node = editor.state.doc.nodeAt(imageMenu.pos);
+    if (!node || node.type.name !== "mdImage") {
+      imageMenu = null;
+      return;
+    }
+    const centered = !node.attrs.centered;
+    editor.view.dispatch(editor.state.tr.setNodeAttribute(imageMenu.pos, "centered", centered));
+    imageMenu = { ...imageMenu, centered };
+  }
+
+  function syncImageMenuTarget() {
+    if (!editor || !imageMenu) return;
+    const node = editor.state.doc.nodeAt(imageMenu.pos);
+    if (!node || node.type.name !== "mdImage") {
+      imageMenu = null;
+    }
+  }
+
+  function resetImageSize(e: MouseEvent) {
+    e.stopPropagation();
+    if (!editor || !imageMenu) return;
+    const node = editor.state.doc.nodeAt(imageMenu.pos);
+    if (!node || node.type.name !== "mdImage") {
+      imageMenu = null;
+      return;
+    }
+    editor.view.dispatch(editor.state.tr.setNodeAttribute(imageMenu.pos, "widthPercent", 100));
+    imageMenu = { ...imageMenu, widthPercent: 100 };
+  }
+
+  async function saveImageAs(e: MouseEvent) {
+    e.stopPropagation();
+    if (!imageMenu) return;
+    try {
+      await api.saveImageAs(imageMenu.src);
+    } catch (err) {
+      appState.showToast(`${t("toast.saveImageFailed")}: ${err}`);
+    }
+  }
+
+  function onWrapperPointerDown(e: PointerEvent) {
+    if (onImageResizePointerDown(e)) return;
+    onMarginPointerDown(e);
+  }
+
+  function onWrapperMouseDown(e: MouseEvent) {
+    if (onImageResizeMouseDown(e)) return;
+  }
+
+  function onImageResizePointerDown(e: PointerEvent) {
+    const handle = (e.target as HTMLElement | null)?.closest?.(".image-resize-handle") as HTMLElement | null;
+    if (!handle || imageResizeActive) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    handle.setPointerCapture?.(e.pointerId);
+    startImageResize(handle, e.clientX, e.pointerId);
+    return true;
+  }
+
+  function onImageResizeMouseDown(e: MouseEvent) {
+    const handle = (e.target as HTMLElement | null)?.closest?.(".image-resize-handle") as HTMLElement | null;
+    if (!handle || imageResizeActive) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    startImageResize(handle, e.clientX);
+    return true;
+  }
+
+  function onImageResizeOverlayMove(e: MouseEvent | PointerEvent) {
+    if (!imageResizeSession) return;
+    e.preventDefault();
+    e.stopPropagation();
+    imageResizeSession.apply(e.clientX);
+  }
+
+  function onImageResizeOverlayUp(e: MouseEvent | PointerEvent) {
+    if (!imageResizeSession) return;
+    e.preventDefault();
+    e.stopPropagation();
+    imageResizeSession.finish(true, e.clientX);
+  }
+
+  function startImageResize(handle: HTMLElement, clientX: number, pointerId?: number) {
+    if (!editor || !wrapperEl) return;
+    const handleEl = handle;
+    const figure = handle.closest('figure[data-type="mdnote-image"]') as HTMLElement | null;
+    const frame = figure?.querySelector(".mdnote-image-frame") as HTMLElement | null;
+    if (!figure || !frame) return;
+    const figureEl = figure;
+    const frameEl = frame;
+    const pos = editor.view.posAtDOM(figure, 0);
+    const node = editor.state.doc.nodeAt(pos);
+    if (!node || node.type.name !== "mdImage") return;
+    imageResizeActive = true;
+    suppressImageClickUntil = Date.now() + 800;
+    imageMenu = null;
+    const side = handle.dataset.side === "left" ? "left" : "right";
+    const startX = clientX;
+    const startRect = frameEl.getBoundingClientRect();
+    const startWidth = startRect.width;
+    const contentWidth = Math.max(120, editor.view.dom.getBoundingClientRect().width);
+    const viewportRect = scrollEl?.getBoundingClientRect() ?? wrapperEl.getBoundingClientRect();
+    const edgePad = 24;
+    const maxWidth =
+      side === "right"
+        ? Math.max(contentWidth, viewportRect.right - edgePad - startRect.left)
+        : Math.max(contentWidth, startRect.right - viewportRect.left - edgePad);
+    const minWidth = Math.min(96, contentWidth);
+    let nextPercent = Number(node.attrs.widthPercent) || 100;
+    const previousCursor = document.body.style.cursor;
+    let finished = false;
+    document.body.style.cursor = "ew-resize";
+    document.documentElement.classList.add("image-resizing");
+    figureEl.setAttribute("data-resizing", "true");
+
+    function applyResize(clientX: number) {
+      const delta = (clientX - startX) * (side === "right" ? 1 : -1);
+      const nextWidth = Math.min(maxWidth, Math.max(minWidth, startWidth + delta));
+      nextPercent = Math.round((nextWidth / contentWidth) * 1000) / 10;
+      if (nextPercent === 100) {
+        frameEl.style.width = "";
+        figureEl.removeAttribute("data-width-percent");
+      } else {
+        frameEl.style.width = `${nextPercent}%`;
+        figureEl.setAttribute("data-width-percent", String(nextPercent));
+      }
+    }
+
+    function onPointerMove(ev: PointerEvent) {
+      ev.preventDefault();
+      applyResize(ev.clientX);
+    }
+
+    function onMouseMove(ev: MouseEvent) {
+      ev.preventDefault();
+      applyResize(ev.clientX);
+    }
+
+    function preventNativeDrag(ev: Event) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+
+    function finish(commit: boolean) {
+      if (finished) return;
+      finished = true;
+      imageResizeSession = null;
+      window.removeEventListener("pointermove", onPointerMove, true);
+      window.removeEventListener("pointerup", onPointerUp, true);
+      window.removeEventListener("pointercancel", onPointerCancel, true);
+      window.removeEventListener("mousemove", onMouseMove, true);
+      window.removeEventListener("mouseup", onMouseUp, true);
+      document.removeEventListener("pointermove", onPointerMove, true);
+      document.removeEventListener("pointerup", onPointerUp, true);
+      document.removeEventListener("mousemove", onMouseMove, true);
+      document.removeEventListener("mouseup", onMouseUp, true);
+      document.removeEventListener("dragstart", preventNativeDrag, true);
+      document.removeEventListener("selectstart", preventNativeDrag, true);
+      document.body.style.cursor = previousCursor;
+      document.documentElement.classList.remove("image-resizing");
+      figureEl.removeAttribute("data-resizing");
+      imageResizeActive = false;
+      suppressImageClickUntil = Date.now() + 800;
+      try {
+        if (pointerId !== undefined) handleEl.releasePointerCapture?.(pointerId);
+      } catch {
+        // Pointer capture may already be released by the browser.
+      }
+      if (commit) {
+        const widthPercent = Math.abs(nextPercent - 100) < 1 ? 100 : nextPercent;
+        editor!.view.dispatch(editor!.state.tr.setNodeAttribute(pos, "widthPercent", widthPercent));
+      }
+    }
+
+    imageResizeSession = {
+      apply: applyResize,
+      finish(commit, clientX) {
+        if (clientX !== undefined) applyResize(clientX);
+        finish(commit);
+      },
+    };
+
+    function onPointerUp(ev: PointerEvent) {
+      ev.preventDefault();
+      imageResizeSession?.finish(true, ev.clientX);
+    }
+
+    function onMouseUp(ev: MouseEvent) {
+      ev.preventDefault();
+      imageResizeSession?.finish(true, ev.clientX);
+    }
+
+    function onPointerCancel(ev: PointerEvent) {
+      ev.preventDefault();
+    }
+
+    window.addEventListener("pointermove", onPointerMove, true);
+    window.addEventListener("pointerup", onPointerUp, true);
+    window.addEventListener("pointercancel", onPointerCancel, true);
+    window.addEventListener("mousemove", onMouseMove, true);
+    window.addEventListener("mouseup", onMouseUp, true);
+    document.addEventListener("pointermove", onPointerMove, true);
+    document.addEventListener("pointerup", onPointerUp, true);
+    document.addEventListener("mousemove", onMouseMove, true);
+    document.addEventListener("mouseup", onMouseUp, true);
+    document.addEventListener("dragstart", preventNativeDrag, true);
+    document.addEventListener("selectstart", preventNativeDrag, true);
   }
 
   // Finds the actual rendered line box the handle should sit next to.
@@ -2332,7 +2676,7 @@
     let ghostLabel: string;
     if (isGroupDrag) {
       source = multiSelectRange!;
-      ghostLabel = `${countBlocksInRange(source)} 个内容块`;
+      ghostLabel = t("editor.blockCount", { n: String(countBlocksInRange(source)) });
     } else {
       // Grabbing an unselected block's handle while a different group is
       // still highlighted implicitly abandons that old selection.
@@ -2967,6 +3311,7 @@
         Callout,
         Columns,
         Column,
+        MdImage,
         PageLink,
         FileLink,
         LinkClickHandler,
@@ -3020,6 +3365,7 @@
       onTransaction: () => {
         syncUndoRedo();
         syncTableHeaderAttrs();
+        syncImageMenuTarget();
         syncActiveTableCell();
         queueTableWrapperSync();
       },
@@ -3028,6 +3374,9 @@
     editorBridge.scrollToPos = scrollToPos;
     editorBridge.scrollToRange = scrollToRange;
     editorBridge.resetZoom = resetZoom;
+    editorBridge.insertImagesFromPaths = (paths: string[], coords?: { x: number; y: number }) => {
+      void insertImagesFromPaths(paths, coords);
+    };
     setGrammarCheckEnabled(editor.view, appState.settings.grammarCheckEnabled);
     lastTabId = appState.activeTabId;
     refreshDerivedState();
@@ -3047,6 +3396,7 @@
     editorBridge.scrollToPos = null;
     editorBridge.scrollToRange = null;
     editorBridge.resetZoom = null;
+    editorBridge.insertImagesFromPaths = null;
   });
 
   $effect(() => {
@@ -3108,7 +3458,14 @@
     class:multiselect-active={multiSelectRange !== null}
     bind:this={wrapperEl}
     ondblclick={onWrapperDblClick}
-    onpointerdown={onMarginPointerDown}
+    onpointerdown={onWrapperPointerDown}
+    onmousedown={onWrapperMouseDown}
+    onpaste={onEditorPaste}
+    ondragover={(e) => {
+      if (Array.from(e.dataTransfer?.items ?? []).some((item) => item.kind === "file" && item.type.startsWith("image/"))) e.preventDefault();
+    }}
+    ondrop={onEditorDrop}
+    onclick={onEditorClick}
     role="presentation"
     style={`zoom:${editorZoom}%`}
   >
@@ -3168,6 +3525,26 @@
           {/each}
         </div>
       {/if}
+    {/if}
+    {#if imageMenu}
+      <div
+        class="context-menu image-menu"
+        style={`left:${imageMenu.x / zoomScale}px; top:${imageMenu.y / zoomScale}px; width:${IMAGE_MENU_WIDTH / zoomScale}px`}
+      >
+        <button
+          class="switch-row"
+          onmousedown={preventBlur}
+          onclick={(e) => {
+            e.stopPropagation();
+            toggleImageCentered();
+          }}
+        >
+          <span>{t("image.center")}</span>
+          <span class="switch" class:on={imageMenu.centered}><span class="switch-knob"></span></span>
+        </button>
+        <button class="image-reset-btn" onmousedown={preventBlur} onclick={resetImageSize}>{t("image.resetSize")}</button>
+        <button class="image-reset-btn" onmousedown={preventBlur} onclick={saveImageAs}>{t("image.saveAs")}</button>
+      </div>
     {/if}
     {#if dropIndicatorTop !== null}
       <div class="block-drop-indicator" style={`top:${dropIndicatorTop / zoomScale}px`}></div>
@@ -3582,6 +3959,21 @@
     {tableDragLabel.text}
   </div>
 {/if}
+{#if imageResizeActive}
+  <div
+    class="image-resize-capture"
+    role="presentation"
+    onpointermove={onImageResizeOverlayMove}
+    onpointerup={onImageResizeOverlayUp}
+    onmousemove={onImageResizeOverlayMove}
+    onmouseup={onImageResizeOverlayUp}
+    ondragstart={(e) => e.preventDefault()}
+    onclick={(e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    }}
+  ></div>
+{/if}
 
 <style>
   :global(html.table-col-resizing),
@@ -3599,6 +3991,15 @@
   :global(html.table-grip-dragging),
   :global(html.table-grip-dragging *) {
     cursor: grabbing !important;
+  }
+  .image-resize-capture {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    cursor: ew-resize;
+    background: transparent;
+    user-select: none;
+    -webkit-user-select: none;
   }
 
   .editor-scroll {
@@ -4029,6 +4430,109 @@
   .editor-content-col :global(.tiptap table p) {
     margin: 0;
   }
+  .editor-content-col :global(.tiptap figure.mdnote-image) {
+    position: relative;
+    margin: 0.8em 0;
+    max-width: 100%;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image[data-centered="true"]) {
+    text-align: center;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image .mdnote-image-frame) {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+    vertical-align: top;
+    -webkit-user-drag: none;
+    user-select: none;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image .mdnote-image-frame::after) {
+    content: "";
+    position: absolute;
+    inset: -4px;
+    border: 1px dashed rgba(55, 53, 47, 0.32);
+    border-radius: 6px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image:hover .mdnote-image-frame::after) {
+    opacity: 1;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image[data-resizing="true"] .mdnote-image-frame::after) {
+    opacity: 1;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image img) {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+    -webkit-user-drag: none;
+    user-select: none;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image[data-width-percent] img) {
+    width: 100%;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image[data-width-percent] .mdnote-image-frame) {
+    max-width: none;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image .image-resize-handle) {
+    position: absolute;
+    top: 50%;
+    width: 7px;
+    height: 32px;
+    transform: translateY(-50%);
+    border-radius: 999px;
+    background: rgba(55, 53, 47, 0.42);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+    z-index: 2;
+    cursor: ew-resize;
+    touch-action: none;
+    -webkit-user-drag: none;
+    user-select: none;
+  }
+  :global(html.image-resizing),
+  :global(html.image-resizing *) {
+    cursor: ew-resize !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image:hover .image-resize-handle) {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image[data-resizing="true"] .image-resize-handle) {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image .image-resize-left) {
+    left: 10px;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image .image-resize-right) {
+    right: 10px;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image figcaption[data-role="missing"]) {
+    display: none;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image[data-invalid="true"] img) {
+    display: none;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image[data-invalid="true"] figcaption[data-role="missing"]) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 180px;
+    min-height: 96px;
+    padding: 14px 18px;
+    box-sizing: border-box;
+    border-radius: 4px;
+    background: #e6e6e6;
+    color: var(--text-secondary);
+    font-size: 13px;
+  }
   .editor-content-col :global(.tiptap details.toggle-list) {
     margin: 0.4em 0;
   }
@@ -4451,6 +4955,27 @@
     padding: 4px;
     display: flex;
     flex-direction: column;
+  }
+  .image-menu {
+    position: absolute;
+    transform: translateX(-50%);
+    z-index: 70;
+    gap: 2px;
+  }
+  .image-reset-btn {
+    width: 100%;
+    padding: 7px 8px;
+    border: none;
+    border-radius: 5px;
+    background: none;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .image-reset-btn:hover {
+    background: var(--hover-bg);
   }
   .table-header-menu {
     min-width: 200px;

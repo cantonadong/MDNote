@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import Icon from "./Icon.svelte";
-  import { appState, stripMdExt, type Tab } from "$lib/appState.svelte";
+  import { appState, isDefaultUntitledTitle, stripMdExt, type Tab } from "$lib/appState.svelte";
   import { t } from "$lib/i18n.svelte";
   import { api } from "$lib/api";
 
@@ -140,7 +140,7 @@
   // with that name selected, ready to be overwritten in one keystroke.
   async function startRename(e: MouseEvent, tab: Tab) {
     e.stopPropagation();
-    const hasRealName = !!tab.path || tab.title !== "未命名.md";
+    const hasRealName = !!tab.path || !isDefaultUntitledTitle(tab.title);
     renamingId = tab.id;
     renameValue = hasRealName ? stripMdExt(tab.title) : "";
     await tick();

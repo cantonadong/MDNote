@@ -70,7 +70,7 @@ function linkChipNode(name: string, dataType: string, glyph: string, stripExt: b
     },
     renderHTML({ node, HTMLAttributes }) {
       const path = node.attrs.path as string | null;
-      let label = path ? basenameOf(path) : "(未命名)";
+      let label = path ? basenameOf(path) : t("link.untitled");
       if (stripExt) label = label.replace(/\.md$/i, "");
       // Icon split into its own element (rather than one plain text node
       // with the glyph and label concatenated) purely so the "broken link"

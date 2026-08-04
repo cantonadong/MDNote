@@ -211,7 +211,7 @@ func performSync(s Settings) SyncResult {
 	client := gowebdav.NewClient(s.SyncURL, s.SyncUsername, s.SyncPassword)
 	client.SetTimeout(30 * time.Second)
 	if err := client.MkdirAll(remoteSyncRoot, 0o755); err != nil {
-		return SyncResult{Success: false, Message: fmt.Sprintf("无法访问云端目录：%v", err)}
+		return SyncResult{Success: false, Message: fmt.Sprintf(localized("无法访问云端目录：%v", "Cannot access cloud folder: %v"), err)}
 	}
 
 	manifest, err := loadManifest()
@@ -221,11 +221,11 @@ func performSync(s Settings) SyncResult {
 
 	localFiles, err := walkLocal(root)
 	if err != nil {
-		return SyncResult{Success: false, Message: fmt.Sprintf("读取本地文件列表失败：%v", err)}
+		return SyncResult{Success: false, Message: fmt.Sprintf(localized("读取本地文件列表失败：%v", "Failed to read local file list: %v"), err)}
 	}
 	remoteFiles, err := walkRemote(client, remoteSyncRoot)
 	if err != nil {
-		return SyncResult{Success: false, Message: fmt.Sprintf("读取云端文件列表失败：%v", err)}
+		return SyncResult{Success: false, Message: fmt.Sprintf(localized("读取云端文件列表失败：%v", "Failed to read cloud file list: %v"), err)}
 	}
 
 	paths := map[string]bool{}
@@ -286,13 +286,13 @@ func performSync(s Settings) SyncResult {
 		case hasLocal && !hasRemote:
 			if hasManifest {
 				if err := os.Remove(localPath); err != nil && !os.IsNotExist(err) {
-					errs = append(errs, fmt.Sprintf("删除本地 %s 失败：%v", relPath, err))
+					errs = append(errs, fmt.Sprintf(localized("删除本地 %s 失败：%v", "Failed to delete local %s: %v"), relPath, err))
 				} else {
 					delete(manifest, relPath)
 					synced++
 				}
 			} else if err := uploadFile(client, localPath, remotePath, manifest, relPath); err != nil {
-				errs = append(errs, fmt.Sprintf("上传 %s 失败：%v", relPath, err))
+				errs = append(errs, fmt.Sprintf(localized("上传 %s 失败：%v", "Failed to upload %s: %v"), relPath, err))
 			} else {
 				synced++
 			}
@@ -300,13 +300,13 @@ func performSync(s Settings) SyncResult {
 		case !hasLocal && hasRemote:
 			if hasManifest {
 				if err := client.Remove(remotePath); err != nil {
-					errs = append(errs, fmt.Sprintf("删除云端 %s 失败：%v", relPath, err))
+					errs = append(errs, fmt.Sprintf(localized("删除云端 %s 失败：%v", "Failed to delete cloud %s: %v"), relPath, err))
 				} else {
 					delete(manifest, relPath)
 					synced++
 				}
 			} else if err := downloadFile(client, localPath, remotePath, remoteMod, manifest, relPath); err != nil {
-				errs = append(errs, fmt.Sprintf("下载 %s 失败：%v", relPath, err))
+				errs = append(errs, fmt.Sprintf(localized("下载 %s 失败：%v", "Failed to download %s: %v"), relPath, err))
 			} else {
 				synced++
 			}
@@ -317,13 +317,13 @@ func performSync(s Settings) SyncResult {
 	}
 
 	if err := saveManifest(manifest); err != nil {
-		errs = append(errs, fmt.Sprintf("保存同步记录失败：%v", err))
+		errs = append(errs, fmt.Sprintf(localized("保存同步记录失败：%v", "Failed to save sync record: %v"), err))
 	}
 
 	if len(errs) > 0 {
 		return SyncResult{Success: false, Message: strings.Join(errs, "; "), FilesSynced: synced, Errors: errs}
 	}
-	return SyncResult{Success: true, Message: "同步完成", FilesSynced: synced}
+	return SyncResult{Success: true, Message: localized("同步完成", "Sync complete"), FilesSynced: synced}
 }
 
 func syncConfigured(s Settings) bool {
@@ -392,12 +392,12 @@ func (a *App) SaveSyncSettings(enabled bool, url, username, password string, int
 func (a *App) TestSyncConnection(url, username, password string) string {
 	url = strings.TrimRight(strings.TrimSpace(url), "/")
 	if url == "" || username == "" || password == "" {
-		return "请填写地址、用户名和密码"
+		return localized("请填写地址、用户名和密码", "Enter the URL, username, and password")
 	}
 	client := gowebdav.NewClient(url, username, password)
 	client.SetTimeout(15 * time.Second)
 	if err := client.Connect(); err != nil {
-		return fmt.Sprintf("连接失败：%v", err)
+		return fmt.Sprintf(localized("连接失败：%v", "Connection failed: %v"), err)
 	}
 	return ""
 }
@@ -412,7 +412,7 @@ func (a *App) SyncNow() SyncResult {
 
 func (a *App) runSync() SyncResult {
 	if !syncMu.TryLock() {
-		return SyncResult{Success: false, Message: "已有同步任务正在进行"}
+		return SyncResult{Success: false, Message: localized("已有同步任务正在进行", "A sync task is already running")}
 	}
 	defer syncMu.Unlock()
 
@@ -421,10 +421,10 @@ func (a *App) runSync() SyncResult {
 		return SyncResult{Success: false, Message: err.Error()}
 	}
 	if !syncConfigured(s) {
-		return SyncResult{Success: false, Message: "尚未配置云同步"}
+		return SyncResult{Success: false, Message: localized("尚未配置云同步", "Cloud sync is not configured")}
 	}
 	if s.RootDir == "" {
-		return SyncResult{Success: false, Message: "尚未设置笔记根目录"}
+		return SyncResult{Success: false, Message: localized("尚未设置笔记根目录", "Notes root folder is not set")}
 	}
 
 	a.emitSyncStatus(SyncStatus{Enabled: s.SyncEnabled, Configured: true, Syncing: true, LastSyncTime: s.LastSyncTime})

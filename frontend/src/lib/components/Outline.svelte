@@ -11,6 +11,7 @@
   let numbers = $derived(
     appState.settings.outlineAutoNumber ? numberOutline(appState.outlineItems) : null,
   );
+  let emptyHeading = $derived(t("outline.emptyHeading"));
 </script>
 
 <aside class="outline">
@@ -23,10 +24,10 @@
         <li>
           <button
             style={`padding-left:${8 + (item.level - 1) * 12}px`}
-            title={item.text || "(空标题)"}
+            title={item.text || emptyHeading}
             onclick={() => jump(item.pos)}
           >
-            {#if numbers}<span class="outline-number">{numbers[i]}</span>{/if}{item.text || "(空标题)"}
+            {#if numbers}<span class="outline-number">{numbers[i]}</span>{/if}{item.text || emptyHeading}
           </button>
         </li>
       {/each}

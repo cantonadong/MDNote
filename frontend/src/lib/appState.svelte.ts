@@ -71,6 +71,14 @@ function makeId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
+export function isDefaultUntitledTitle(title: string): boolean {
+  return title === t("tabs.untitled") || title === "未命名.md" || title === "Untitled.md";
+}
+
+function isImagePath(path: string): boolean {
+  return /\.(apng|avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(path);
+}
+
 function isDirty(tab: Tab): boolean {
   return tab.content !== tab.savedContent;
 }
@@ -189,7 +197,11 @@ class AppState {
     // landing right after whatever tab is currently active (and switching
     // to it) rather than tacked onto the far end of the tab strip, since a
     // drop is a deliberate "open this next to what I'm looking at" gesture.
-    api.onFileDrop((paths) => {
+    api.onFileDrop((paths, coords) => {
+      const imagePaths = paths.filter(isImagePath);
+      if (imagePaths.length > 0) {
+        editorBridge.insertImagesFromPaths?.(imagePaths, coords);
+      }
       for (const p of paths) {
         if (/\.(md|txt)$/i.test(p)) void this.openPath(p, { insertAfterActive: true });
       }
@@ -265,7 +277,7 @@ class AppState {
     const tab: Tab = {
       id: makeId(),
       path: null,
-      title: "未命名.md",
+      title: t("tabs.untitled"),
       content: "",
       savedContent: "",
       missing: false,
@@ -285,7 +297,7 @@ class AppState {
   // is the active tab should replace it rather than leaving it sitting
   // around as clutter alongside the newly opened one.
   private isPristineTab(tab: Tab | null): boolean {
-    return !!tab && tab.path === null && tab.content === "" && tab.title === "未命名.md";
+    return !!tab && tab.path === null && tab.content === "" && isDefaultUntitledTitle(tab.title);
   }
 
   // Persists which files are currently open (and which is active) so the
@@ -510,6 +522,7 @@ class AppState {
     }
     if (this.tabs.length === 0) this.newTab();
     else this.persistOpenTabs();
+    void api.cleanupUnusedImages(this.tabs.map((t) => t.content)).catch(() => {});
   }
 
   async resolvePendingClose(choice: "save" | "discard" | "cancel") {
@@ -599,15 +612,16 @@ class AppState {
       return null;
     }
     const dir = nearPath ? parentDir(nearPath) : this.targetDirForNewEntry();
-    // No naming prompt: auto-picks "未命名.md", or "未命名 N.md" the first
-    // free N if that's already taken. Doesn't open it — the caller inserts a
+    // No naming prompt: auto-picks the localized untitled filename, or adds
+    // a number if that's already taken. Doesn't open it — the caller inserts a
     // pageLink chip pointing at it in the *current* document; opening the
     // new (still-empty) file would yank focus away from what the user was
     // actually doing. They can click the chip when they're ready to edit it.
     try {
       let entry = null;
+      const baseName = stripMdExt(t("tabs.untitled"));
       for (let n = 1; n <= 999; n++) {
-        const name = n === 1 ? "未命名.md" : `未命名 ${n}.md`;
+        const name = n === 1 ? `${baseName}.md` : `${baseName} ${n}.md`;
         try {
           entry = await api.createEntry(dir, name, false);
           break;

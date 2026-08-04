@@ -10,6 +10,10 @@ export function Basename(arg1) {
   return window['go']['main']['App']['Basename'](arg1);
 }
 
+export function CleanupUnusedImages(arg1) {
+  return window['go']['main']['App']['CleanupUnusedImages'](arg1);
+}
+
 export function CreateEntry(arg1, arg2, arg3) {
   return window['go']['main']['App']['CreateEntry'](arg1, arg2, arg3);
 }
@@ -40,6 +44,10 @@ export function GetSettings() {
 
 export function GetSyncStatus() {
   return window['go']['main']['App']['GetSyncStatus']();
+}
+
+export function ImageDataURL(arg1) {
+  return window['go']['main']['App']['ImageDataURL'](arg1);
 }
 
 export function ListDir(arg1) {
@@ -92,6 +100,18 @@ export function SaveAppSettings(arg1, arg2, arg3) {
 
 export function SaveFileDialog(arg1, arg2) {
   return window['go']['main']['App']['SaveFileDialog'](arg1, arg2);
+}
+
+export function SaveImageAs(arg1) {
+  return window['go']['main']['App']['SaveImageAs'](arg1);
+}
+
+export function SaveImageAssetFromData(arg1, arg2) {
+  return window['go']['main']['App']['SaveImageAssetFromData'](arg1, arg2);
+}
+
+export function SaveImageAssetFromPath(arg1) {
+  return window['go']['main']['App']['SaveImageAssetFromPath'](arg1);
 }
 
 export function SaveOpenTabs(arg1, arg2) {

@@ -76,7 +76,16 @@ func (a *App) notifyOpenFile(path string) {
 
 // GetSettings returns the persisted portable settings (root dir etc.).
 func (a *App) GetSettings() (Settings, error) {
-	return loadSettings()
+	s, err := loadSettings()
+	if err != nil {
+		return Settings{}, err
+	}
+	if s.RootDir != "" {
+		if err := migrateLegacyPicToImages(s); err != nil {
+			return Settings{}, err
+		}
+	}
+	return s, nil
 }
 
 // SaveAppSettings persists the settings page's toggles (language, outline
@@ -139,7 +148,7 @@ func (a *App) SaveOpenTabs(paths []string, activePath string) error {
 // chosen folder might already contain (see effectiveRoot in fsops.go).
 func (a *App) SelectRootDir() (Settings, error) {
 	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "选择笔记根目录",
+		Title: localized("选择笔记根目录", "Select notes root folder"),
 	})
 	if err != nil || dir == "" {
 		return loadSettings()
@@ -155,6 +164,9 @@ func (a *App) SelectRootDir() (Settings, error) {
 	if err := saveSettings(s); err != nil {
 		return Settings{}, err
 	}
+	if err := migrateLegacyPicToImages(s); err != nil {
+		return Settings{}, err
+	}
 	return s, nil
 }
 
@@ -165,7 +177,7 @@ func (a *App) SelectRootDir() (Settings, error) {
 // physically relocates the current note collection.
 func (a *App) MigrateRootDir() (Settings, error) {
 	newParent, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "选择迁移到的位置",
+		Title: localized("选择迁移到的位置", "Select migration destination"),
 	})
 	if err != nil || newParent == "" {
 		return loadSettings()
@@ -175,7 +187,7 @@ func (a *App) MigrateRootDir() (Settings, error) {
 		return Settings{}, err
 	}
 	if s.RootDir == "" {
-		return Settings{}, fmt.Errorf("尚未设置根目录")
+		return Settings{}, fmt.Errorf(localized("尚未设置根目录", "root folder is not set"))
 	}
 	oldParentAbs, err := filepath.Abs(s.RootDir)
 	if err != nil {
@@ -191,10 +203,10 @@ func (a *App) MigrateRootDir() (Settings, error) {
 	oldRoot := effectiveRoot(s)
 	newRoot := filepath.Join(newParentAbs, mdnoteSubdir)
 	if rel, err := filepath.Rel(oldRoot, newParentAbs); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return Settings{}, fmt.Errorf("不能迁移到自身内部")
+		return Settings{}, fmt.Errorf(localized("不能迁移到自身内部", "cannot migrate into itself"))
 	}
 	if _, err := os.Stat(newRoot); err == nil {
-		return Settings{}, fmt.Errorf("目标位置已存在 MDNote 文件夹")
+		return Settings{}, fmt.Errorf(localized("目标位置已存在 MDNote 文件夹", "the destination already contains an MDNote folder"))
 	}
 	if _, err := os.Stat(oldRoot); err == nil {
 		if err := moveDirAcrossVolumes(oldRoot, newRoot); err != nil {
@@ -207,6 +219,9 @@ func (a *App) MigrateRootDir() (Settings, error) {
 	}
 	s.RootDir = newParentAbs
 	if err := saveSettings(s); err != nil {
+		return Settings{}, err
+	}
+	if err := migrateLegacyPicToImages(s); err != nil {
 		return Settings{}, err
 	}
 	return s, nil
@@ -235,7 +250,7 @@ func (a *App) onBeforeClose(ctx context.Context) bool {
 // selected); otherwise it falls back to the OS default.
 func (a *App) OpenFileDialog(defaultDir string) (string, error) {
 	opts := runtime.OpenDialogOptions{
-		Title: "打开 Markdown 文件",
+		Title: localized("打开 Markdown 文件", "Open Markdown file"),
 		Filters: []runtime.FileFilter{
 			{DisplayName: "Markdown (*.md)", Pattern: "*.md"},
 		},
@@ -252,10 +267,10 @@ func (a *App) OpenFileDialog(defaultDir string) (string, error) {
 // the OS default.
 func (a *App) SaveFileDialog(defaultName string, defaultDir string) (string, error) {
 	if defaultName == "" {
-		defaultName = "未命名"
+		defaultName = localized("未命名", "Untitled")
 	}
 	opts := runtime.SaveDialogOptions{
-		Title:           "另存为",
+		Title:           localized("另存为", "Save As"),
 		DefaultFilename: defaultName,
 		Filters: []runtime.FileFilter{
 			{DisplayName: "Markdown (*.md)", Pattern: "*.md"},
@@ -271,7 +286,7 @@ func (a *App) SaveFileDialog(defaultName string, defaultDir string) (string, err
 // inserting a "file link" block that isn't restricted to markdown.
 func (a *App) OpenAnyFileDialog() (string, error) {
 	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "选择文件",
+		Title: localized("选择文件", "Select file"),
 	})
 }
 
