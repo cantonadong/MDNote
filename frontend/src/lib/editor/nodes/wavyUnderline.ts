@@ -31,7 +31,8 @@ export const DotUnderline = Mark.create({
       "span",
       mergeAttributes(HTMLAttributes, {
         "data-dot-underline": "",
-        style: "text-emphasis: filled dot var(--mdnote-underline-color, currentColor); text-emphasis-position: under;",
+        style:
+          "text-emphasis: none; -webkit-text-emphasis: none; background-image: radial-gradient(circle, var(--mdnote-underline-color, currentColor) 1.15px, transparent 1.3px); background-repeat: repeat-x; background-size: 7px 4px; background-position: left calc(100% - 0.02em); padding-bottom: 0.18em; box-decoration-break: clone; -webkit-box-decoration-break: clone;",
       }),
       0,
     ];

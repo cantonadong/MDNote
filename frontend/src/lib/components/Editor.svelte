@@ -4751,8 +4751,19 @@
   .editor-content-col :global(.tiptap [data-underline-color] [data-wavy]) {
     text-decoration-color: var(--mdnote-underline-color) !important;
   }
+  .editor-content-col :global(.tiptap [data-dot-underline]) {
+    text-emphasis: none !important;
+    -webkit-text-emphasis: none !important;
+    background-image: radial-gradient(circle, var(--mdnote-underline-color, currentColor) 1.15px, transparent 1.3px);
+    background-repeat: repeat-x;
+    background-size: 7px 4px;
+    background-position: left calc(100% - 0.02em);
+    padding-bottom: 0.18em;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
   .editor-content-col :global(.tiptap [data-underline-color] [data-dot-underline]) {
-    text-emphasis-color: var(--mdnote-underline-color) !important;
+    background-image: radial-gradient(circle, var(--mdnote-underline-color) 1.15px, transparent 1.3px);
   }
   .editor-content-col :global(.tiptap .grammar-error) {
     text-decoration: underline wavy #e03e3e;
