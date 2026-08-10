@@ -6,6 +6,10 @@ export function AddDictionaryWord(arg1) {
   return window['go']['main']['App']['AddDictionaryWord'](arg1);
 }
 
+export function ApplyUpdate() {
+  return window['go']['main']['App']['ApplyUpdate']();
+}
+
 export function Basename(arg1) {
   return window['go']['main']['App']['Basename'](arg1);
 }
@@ -44,6 +48,10 @@ export function GetSettings() {
 
 export function GetSyncStatus() {
   return window['go']['main']['App']['GetSyncStatus']();
+}
+
+export function GetUpdateStatus() {
+  return window['go']['main']['App']['GetUpdateStatus']();
 }
 
 export function ImageDataURL(arg1) {
@@ -122,8 +130,8 @@ export function SavePdfDialog(arg1, arg2) {
   return window['go']['main']['App']['SavePdfDialog'](arg1, arg2);
 }
 
-export function SaveSyncSettings(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['SaveSyncSettings'](arg1, arg2, arg3, arg4, arg5);
+export function SaveSyncSettings(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['SaveSyncSettings'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function SelectRootDir() {

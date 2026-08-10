@@ -7,6 +7,7 @@
   import { t } from "$lib/i18n.svelte";
 
   let rootChildren = $state<FileEntry[] | null>(null);
+  let collapsed = $state(false);
 
   async function loadRoot() {
     if (!appState.settings.rootDir) {
@@ -57,9 +58,17 @@
   }
 </script>
 
-<aside class="sidebar">
+<aside class="sidebar" class:collapsed>
+  {#if collapsed}
+    <button class="collapse-rail-btn" title="MDNote" aria-label="MDNote" onclick={() => (collapsed = false)}>
+      <Icon name="chevron-right" size={16} />
+    </button>
+  {:else}
   <div class="sidebar-header">
     <span class="brand">MDNote</span>
+    <button class="collapse-btn" title="折叠侧栏" aria-label="折叠侧栏" onclick={() => (collapsed = true)}>
+      <Icon name="chevron-left" size={14} />
+    </button>
     {#if appState.settings.rootDir}
       <div class="header-actions">
         <button title={t("sidebar.newFile")} aria-label={t("sidebar.newFile")} onclick={newFile}
@@ -130,7 +139,20 @@
       <Icon name="settings" size={15} />
       <span>{t("sidebar.settings")}</span>
     </button>
+    {#if appState.settings.syncVerified && appState.syncStatus.configured}
+      <button
+        class="footer-btn"
+        title={t("sidebar.sync")}
+        aria-label={t("sidebar.sync")}
+        disabled={appState.syncStatus.syncing}
+        onclick={() => void appState.syncNow()}
+      >
+        <Icon name="refresh" size={15} />
+        <span>{t("sidebar.sync")}</span>
+      </button>
+    {/if}
   </div>
+  {/if}
 </aside>
 
 <style>
@@ -143,6 +165,31 @@
     flex-direction: column;
     height: 100%;
   }
+  .sidebar.collapsed {
+    width: 32px;
+  }
+  .collapse-rail-btn,
+  .collapse-btn {
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .collapse-rail-btn {
+    width: 31px;
+    height: 40px;
+  }
+  .collapse-btn {
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    -webkit-app-region: no-drag;
+  }
+  .collapse-rail-btn:hover,
+  .collapse-btn:hover { background: var(--hover-bg); color: var(--text-primary); }
   .sidebar-header {
     display: flex;
     align-items: center;
@@ -285,12 +332,16 @@
     flex-shrink: 0;
     padding: 6px 8px;
     border-top: 1px solid var(--border);
+    display: flex;
+    gap: 4px;
   }
   .footer-btn {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 8px;
-    width: 100%;
+    flex: 1 1 0;
+    min-width: 0;
     border: none;
     background: transparent;
     color: var(--text-secondary);
@@ -302,6 +353,10 @@
   .footer-btn:hover {
     background: var(--hover-bg);
     color: var(--text-primary);
+  }
+  .footer-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
   }
   .footer-btn.active {
     background: var(--active-bg);

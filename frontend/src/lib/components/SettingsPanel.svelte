@@ -46,6 +46,7 @@
       } else {
         testState = "ok";
         testMessage = "";
+        await appState.saveSyncSettings(syncEnabled, syncURL, syncUsername, syncPassword, syncInterval, true);
       }
     } catch (e) {
       testState = "error";
@@ -54,7 +55,11 @@
   }
 
   async function saveSyncSettings() {
-    const ok = await appState.saveSyncSettings(syncEnabled, syncURL, syncUsername, syncPassword, syncInterval);
+    const sameConnection = syncURL.trim().replace(/\/$/, "") === appState.settings.syncURL
+      && syncUsername === appState.settings.syncUsername
+      && syncPassword === appState.settings.syncPassword;
+    const verified = testState === "ok" || (sameConnection && appState.settings.syncVerified);
+    const ok = await appState.saveSyncSettings(syncEnabled, syncURL, syncUsername, syncPassword, syncInterval, verified);
     if (!ok) return;
     saveState = "saved";
     setTimeout(() => {

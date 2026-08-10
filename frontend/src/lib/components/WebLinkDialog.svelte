@@ -60,10 +60,14 @@
       appState.cancelWebLink();
     }
   }
+
+  function onOverlayClick(e: MouseEvent) {
+    if (e.target === e.currentTarget) appState.cancelWebLink();
+  }
 </script>
 
 {#if appState.pendingWebLink}
-  <div class="overlay" onkeydown={onKeydown} role="presentation">
+  <div class="overlay" onkeydown={onKeydown} onclick={onOverlayClick} role="presentation">
     <div class="dialog">
       <h3>{editing ? t("weblink.editTitle") : t("weblink.title")}</h3>
       <label class="field">

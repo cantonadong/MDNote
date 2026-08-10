@@ -306,6 +306,26 @@ export function addColumns(editor: Editor, ref: TableRef, atIndex: number, count
   replaceTable(editor, ref, rows);
 }
 
+export function addCheckboxColumn(editor: Editor, ref: TableRef) {
+  const { schema } = editor.state;
+  const off = indexOffset(ref.node);
+  const lastLogical = colCount(ref.node) - 1;
+  const reuseLast = lastLogical >= 0 && isColumnEmpty(ref.node, lastLogical);
+  const rows = rowsOf(ref.node).map((row) => {
+    const cells: PMNode[] = [];
+    for (let c = 0; c < row.childCount; c++) cells.push(row.child(c));
+    const kind = row.child(0)?.type.name === "tableHeader" ? schema.nodes.tableHeader : schema.nodes.tableCell;
+    const paragraph = schema.nodes.paragraph.create();
+    const taskItem = schema.nodes.taskItem.create({ checked: false }, paragraph);
+    const taskList = schema.nodes.taskList.create(null, taskItem);
+    const cell = kind.create({ colwidth: [NEW_COLUMN_WIDTH] }, taskList);
+    if (reuseLast) cells[lastLogical + off] = cell;
+    else cells.push(cell);
+    return row.type.create(row.attrs, cells, row.marks);
+  });
+  replaceTable(editor, ref, rows);
+}
+
 // Explicit "delete this column" menu action — see deleteRow above for why
 // this isn't restricted to already-empty columns the way removeColumns is.
 export function deleteColumn(editor: Editor, ref: TableRef, index: number) {
@@ -317,6 +337,40 @@ export function deleteColumn(editor: Editor, ref: TableRef, index: number) {
     return row.type.create(row.attrs, cells, row.marks);
   });
   replaceTable(editor, ref, rows);
+}
+
+// Deletes the complete rows and physical columns covered by one rectangular
+// CellSelection in a single transaction. If that would leave no grid at
+// all, the table itself is removed.
+export function deleteSelectedRowsAndColumns(
+  editor: Editor,
+  ref: TableRef,
+  rowFrom: number,
+  rowTo: number,
+  colFrom: number,
+  colTo: number,
+) {
+  const remainingRowCount = ref.node.childCount - (rowTo - rowFrom);
+  const physicalCols = ref.node.firstChild?.childCount ?? 0;
+  const remainingColCount = physicalCols - (colTo - colFrom);
+  if (remainingRowCount <= 0 || remainingColCount <= 0) {
+    deleteTable(editor, ref);
+    return;
+  }
+  const rows = rowsOf(ref.node)
+    .filter((_row, index) => index < rowFrom || index >= rowTo)
+    .map((row) => {
+      const cells: PMNode[] = [];
+      for (let col = 0; col < row.childCount; col++) {
+        if (col < colFrom || col >= colTo) cells.push(row.child(col));
+      }
+      return row.type.create(row.attrs, cells, row.marks);
+    });
+  rows[0] = retypeRow(rows[0], editor.state.schema, "tableHeader");
+  const removedIndexColumn = !!ref.node.attrs.showIndexColumn && colFrom === 0;
+  const attrs = removedIndexColumn ? { ...ref.node.attrs, showIndexColumn: false } : ref.node.attrs;
+  const newTable = ref.node.type.create(attrs, rows, ref.node.marks);
+  editor.view.dispatch(editor.state.tr.replaceWith(ref.pos, ref.pos + ref.node.nodeSize, newTable));
 }
 
 export function removeColumns(editor: Editor, ref: TableRef, fromIndex: number, count: number) {

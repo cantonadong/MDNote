@@ -15,6 +15,7 @@
     "file-plus": "M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-7-7Z M13 2v7h7 M12 12v6 M9 15h6",
     file: "M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-7-7Z M13 2v7h7",
     "chevron-right": "M9 18l6-6-6-6",
+    "chevron-left": "M15 18l-6-6 6-6",
     "chevron-down": "M6 9l6 6 6-6",
     plus: "M12 5v14 M5 12h14",
     close: "M18 6 6 18 M6 6l12 12",

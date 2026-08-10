@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -23,7 +24,11 @@ type App struct {
 	// syncCancel stops the background cloud-sync loop (sync.go's
 	// runSyncLoop) — cancelled from onBeforeClose so it isn't left running
 	// mid-cycle past the point the rest of the app has torn down.
-	syncCancel context.CancelFunc
+	syncCancel       context.CancelFunc
+	updateMu         sync.Mutex
+	updateStatus     UpdateStatus
+	updateStagedPath string
+	updateCleanup    *updateCleanup
 }
 
 func NewApp() *App {
@@ -35,6 +40,8 @@ func (a *App) startup(ctx context.Context) {
 	syncCtx, cancel := context.WithCancel(ctx)
 	a.syncCancel = cancel
 	go a.runSyncLoop(syncCtx)
+	go a.checkForUpdatesDaily(ctx)
+	go cleanupUpdateFiles(a.updateCleanup)
 }
 
 // GetInitialFile returns (and clears) the file this process launched with,
@@ -86,6 +93,18 @@ func (a *App) GetSettings() (Settings, error) {
 		}
 	}
 	return s, nil
+}
+
+// GetUpdateStatus lets the frontend recover a ready notification even if
+// the background download finished before its Wails event listener mounted.
+func (a *App) GetUpdateStatus() UpdateStatus {
+	return a.getUpdateStatus()
+}
+
+// ApplyUpdate starts the already-downloaded executable in updater mode and
+// quits this process. The helper replaces us only after our PID has exited.
+func (a *App) ApplyUpdate() error {
+	return a.applyUpdate()
 }
 
 // SaveAppSettings persists the settings page's toggles (language, outline

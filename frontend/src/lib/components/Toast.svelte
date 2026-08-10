@@ -3,6 +3,7 @@
   import { appState } from "$lib/appState.svelte";
   import { api } from "$lib/api";
   import { t } from "$lib/i18n.svelte";
+  import UpdateReadyToast from "./UpdateReadyToast.svelte";
 
   async function openExportedPdf() {
     const path = appState.exportedPdfPath;
@@ -29,6 +30,18 @@
       <button onclick={() => appState.hideExportedPdf()}>{t("findreplace.close")}</button>
     </div>
   </div>
+{/if}
+
+{#if appState.updateStatus.ready}
+  <UpdateReadyToast
+    version={appState.updateStatus.version}
+    title={t("update.ready")}
+    detail={t("update.downloaded", { version: appState.updateStatus.version })}
+    confirmLabel={t("update.restart")}
+    laterLabel={t("update.later")}
+    onconfirm={() => void appState.applyUpdate()}
+    onlater={() => appState.dismissUpdate()}
+  />
 {/if}
 
 <style>

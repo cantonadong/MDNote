@@ -33,6 +33,9 @@ func initialFileFromArgs(args []string) string {
 }
 
 func main() {
+	if runUpdateHelper(os.Args) {
+		return
+	}
 	initialFile := initialFileFromArgs(os.Args)
 
 	// If MDNote is already running, forward the file to it and exit instead
@@ -45,6 +48,7 @@ func main() {
 
 	app := NewApp()
 	app.initialFile = initialFile
+	app.updateCleanup = updateCleanupArgs(os.Args)
 
 	go serveSingleInstance(ln, app.notifyOpenFile)
 
@@ -57,11 +61,11 @@ func main() {
 	}
 
 	err := wails.Run(&options.App{
-		Title:  "MDNote",
-		Width:  1280,
-		Height: 800,
-		MinWidth: 900,
-		MinHeight: 600,
+		Title:            "MDNote",
+		Width:            1280,
+		Height:           800,
+		MinWidth:         900,
+		MinHeight:        600,
 		WindowStartState: startState,
 		AssetServer: &assetserver.Options{
 			Assets: assets,

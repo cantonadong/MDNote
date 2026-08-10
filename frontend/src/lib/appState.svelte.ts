@@ -1,4 +1,4 @@
-import { api, type Settings, type SyncStatus } from "./api";
+import { api, type Settings, type SyncStatus, type UpdateStatus } from "./api";
 import type { OutlineItem } from "./editor/outline";
 import { editorBridge } from "./editor/bridge.svelte";
 import { i18n, t, type LanguageSetting } from "./i18n.svelte";
@@ -98,6 +98,7 @@ class AppState {
     syncUsername: "",
     syncPassword: "",
     syncIntervalMinutes: 30,
+    syncVerified: false,
     lastSyncTime: "",
     lastSyncError: "",
   });
@@ -112,6 +113,7 @@ class AppState {
     lastError: "",
     filesSynced: 0,
   });
+  updateStatus = $state<UpdateStatus>({ ready: false, version: "" });
   // The settings page renders as its own pseudo-tab in the tab bar rather
   // than a file — settingsOpen is whether that tab exists at all,
   // settingsActive is whether it's the currently-focused one (vs a real
@@ -166,6 +168,10 @@ class AppState {
     this.syncStatus = await api.getSyncStatus();
     api.onSyncStatus((status) => {
       this.syncStatus = status;
+    });
+    this.updateStatus = await api.getUpdateStatus();
+    api.onUpdateStatus((status) => {
+      this.updateStatus = status;
     });
 
     // Restore whatever was open last session — silently skipping any file
@@ -852,9 +858,10 @@ class AppState {
     username: string,
     password: string,
     intervalMinutes: number,
+    verified: boolean,
   ): Promise<boolean> {
     try {
-      this.settings = await api.saveSyncSettings(enabled, url, username, password, intervalMinutes);
+      this.settings = await api.saveSyncSettings(enabled, url, username, password, intervalMinutes, verified);
       this.syncStatus = await api.getSyncStatus();
       return true;
     } catch (e) {
@@ -875,6 +882,22 @@ class AppState {
     } catch (e) {
       this.showToast(`${t("settings.sync.syncFailed")}: ${e}`);
       return null;
+    }
+  }
+
+  dismissUpdate() {
+    this.updateStatus = { ready: false, version: "" };
+  }
+
+  async applyUpdate() {
+    if (this.tabs.some((tab) => isDirty(tab))) {
+      this.showToast(t("update.saveFirst"));
+      return;
+    }
+    try {
+      await api.applyUpdate();
+    } catch (e) {
+      this.showToast(`${t("update.failed")}: ${e}`);
     }
   }
 }

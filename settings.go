@@ -57,11 +57,16 @@ type Settings struct {
 	SyncUsername        string `json:"syncUsername"`
 	SyncPassword        string `json:"syncPassword"`
 	SyncIntervalMinutes int    `json:"syncIntervalMinutes"`
+	SyncVerified        bool   `json:"syncVerified"`
 	// LastSyncTime/LastSyncError record the most recent sync attempt's
 	// outcome (RFC3339 UTC / empty-if-ok) so the status bar has something to
 	// show immediately on launch, before the next sync cycle runs.
 	LastSyncTime  string `json:"lastSyncTime"`
 	LastSyncError string `json:"lastSyncError"`
+	// LastUpdateCheckDate is a local calendar date (YYYY-MM-DD). A completed
+	// GitHub Release check is recorded once per day so subsequent launches
+	// that day stay fully offline and silent.
+	LastUpdateCheckDate string `json:"lastUpdateCheckDate"`
 }
 
 func settingsPath() (string, error) {
@@ -139,10 +144,14 @@ func loadSettings() (Settings, error) {
 			if n, err := strconv.Atoi(strings.TrimSpace(value)); err == nil {
 				s.SyncIntervalMinutes = n
 			}
+		case "SyncVerified":
+			s.SyncVerified = strings.TrimSpace(value) == "true"
 		case "LastSyncTime":
 			s.LastSyncTime = strings.TrimSpace(value)
 		case "LastSyncError":
 			s.LastSyncError = strings.TrimSpace(value)
+		case "LastUpdateCheckDate":
+			s.LastUpdateCheckDate = strings.TrimSpace(value)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -173,6 +182,7 @@ func saveSettings(s Settings) error {
 		fmt.Fprintf(&b, "DictWord=%s\n", w)
 	}
 	fmt.Fprintf(&b, "SyncEnabled=%t\n", s.SyncEnabled)
+	fmt.Fprintf(&b, "SyncVerified=%t\n", s.SyncVerified)
 	if s.SyncURL != "" {
 		fmt.Fprintf(&b, "SyncURL=%s\n", s.SyncURL)
 	}
@@ -194,6 +204,9 @@ func saveSettings(s Settings) error {
 	}
 	if s.LastSyncError != "" {
 		fmt.Fprintf(&b, "LastSyncError=%s\n", s.LastSyncError)
+	}
+	if s.LastUpdateCheckDate != "" {
+		fmt.Fprintf(&b, "LastUpdateCheckDate=%s\n", s.LastUpdateCheckDate)
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }

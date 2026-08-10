@@ -367,7 +367,7 @@ func (a *App) GetSyncStatus() (SyncStatus, error) {
 
 // SaveSyncSettings persists the cloud-sync connection fields, following the
 // same load-then-patch-just-these-fields convention as SaveAppSettings.
-func (a *App) SaveSyncSettings(enabled bool, url, username, password string, intervalMinutes int) (Settings, error) {
+func (a *App) SaveSyncSettings(enabled bool, url, username, password string, intervalMinutes int, verified bool) (Settings, error) {
 	s, err := loadSettings()
 	if err != nil {
 		return Settings{}, err
@@ -380,6 +380,7 @@ func (a *App) SaveSyncSettings(enabled bool, url, username, password string, int
 	s.SyncUsername = username
 	s.SyncPassword = password
 	s.SyncIntervalMinutes = intervalMinutes
+	s.SyncVerified = verified && syncConfigured(s)
 	if err := saveSettings(s); err != nil {
 		return Settings{}, err
 	}

@@ -4,8 +4,10 @@ import { TableCell as BaseTableCell } from "@tiptap/extension-table-cell";
 import { TableHeader as BaseTableHeader } from "@tiptap/extension-table-header";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import { Fragment } from "@tiptap/pm/model";
+import { CellSelection } from "@tiptap/pm/tables";
 import { Plugin } from "@tiptap/pm/state";
 import type { Transaction } from "@tiptap/pm/state";
+import type { EditorView } from "@tiptap/pm/view";
 import { t } from "../../i18n.svelte";
 
 export const TableHeader = BaseTableHeader.extend({
@@ -94,21 +96,84 @@ export const Table = BaseTable.extend({
   // ...) and, if resizable, columnResizing(); dropping those would break
   // core table editing entirely, not just the index column.
   addProseMirrorPlugins() {
-    return [plainCellTextSelectionPlugin(), ...(this.parent?.() ?? []), indexColumnPlugin(), headerRowKindPlugin()];
+    return [cellPointerSelectionPlugin(), ...(this.parent?.() ?? []), indexColumnPlugin(), headerRowKindPlugin()];
   },
 });
 
-function plainCellTextSelectionPlugin(): Plugin {
+type CellGesture = { anchorPos: number; pointerId: number };
+
+function isContentHit(target: HTMLElement): boolean {
+  // Paragraphs occupy the full inner text-line width of a cell. This makes
+  // both text and the same line's trailing blank area editable; only the
+  // cell padding around the paragraph belongs to cell selection.
+  return !!target.closest("p, summary, a, button, input, textarea, select, img, figure, code, [data-type='taskList']");
+}
+
+function cellAtPoint(view: EditorView, clientX: number, clientY: number): { element: HTMLTableCellElement; pos: number } | null {
+  const target = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+  const element = target?.closest?.("td, th") as HTMLTableCellElement | null;
+  if (!element || !view.dom.contains(element)) return null;
+  try {
+    return { element, pos: view.posAtDOM(element, 0) - 1 };
+  } catch {
+    return null;
+  }
+}
+
+function cellPointerSelectionPlugin(): Plugin {
+  let gesture: CellGesture | null = null;
+  let ownerView: EditorView | null = null;
+
+  const move = (event: PointerEvent) => {
+    if (!gesture || !ownerView || event.pointerId !== gesture.pointerId) return;
+    const target = cellAtPoint(ownerView, event.clientX, event.clientY);
+    if (!target) return;
+    const selection = CellSelection.create(ownerView.state.doc, gesture.anchorPos, target.pos);
+    if (!selection.eq(ownerView.state.selection)) ownerView.dispatch(ownerView.state.tr.setSelection(selection));
+  };
+
+  const finish = (event: PointerEvent) => {
+    if (!gesture || event.pointerId !== gesture.pointerId) return;
+    const view = ownerView;
+    gesture = null;
+    ownerView = null;
+    view?.dom.dispatchEvent(new CustomEvent("mdnote:cell-selection-finished"));
+    window.removeEventListener("pointermove", move, true);
+    window.removeEventListener("pointerup", finish, true);
+    window.removeEventListener("pointercancel", finish, true);
+  };
+
   return new Plugin({
     props: {
       handleDOMEvents: {
-        mousedown: (_view, event) => {
-          const target = event.target as HTMLElement | null;
+        mousedown: (view, event) => {
           if (event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey) return false;
-          if (!target?.closest?.("td, th")) return false;
+          const target = cellAtPoint(view, event.clientX, event.clientY);
+          if (!target) return false;
+          if (isContentHit(event.target as HTMLElement)) return true;
+
+          event.preventDefault();
+          const pointerId = (event as PointerEvent).pointerId ?? 1;
+          gesture = { anchorPos: target.pos, pointerId };
+          ownerView = view;
+          view.dispatch(view.state.tr.setSelection(CellSelection.create(view.state.doc, target.pos)));
+          window.addEventListener("pointermove", move, true);
+          window.addEventListener("pointerup", finish, true);
+          window.addEventListener("pointercancel", finish, true);
           return true;
         },
       },
+    },
+    view() {
+      return {
+        destroy() {
+          gesture = null;
+          ownerView = null;
+          window.removeEventListener("pointermove", move, true);
+          window.removeEventListener("pointerup", finish, true);
+          window.removeEventListener("pointercancel", finish, true);
+        },
+      };
     },
   });
 }

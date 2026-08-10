@@ -22,6 +22,7 @@ export interface Settings {
   syncUsername: string;
   syncPassword: string;
   syncIntervalMinutes: number;
+  syncVerified: boolean;
   lastSyncTime: string;
   lastSyncError: string;
 }
@@ -40,6 +41,11 @@ export interface SyncResult {
   message: string;
   filesSynced: number;
   errors: string[] | null;
+}
+
+export interface UpdateStatus {
+  ready: boolean;
+  version: string;
 }
 
 function goApp(): any {
@@ -112,11 +118,17 @@ export const api = {
     username: string,
     password: string,
     intervalMinutes: number,
-  ): Promise<Settings> => goApp().SaveSyncSettings(enabled, url, username, password, intervalMinutes),
+    verified: boolean,
+  ): Promise<Settings> => goApp().SaveSyncSettings(enabled, url, username, password, intervalMinutes, verified),
   testSyncConnection: (url: string, username: string, password: string): Promise<string> =>
     goApp().TestSyncConnection(url, username, password),
   syncNow: (): Promise<SyncResult> => goApp().SyncNow(),
   getSyncStatus: (): Promise<SyncStatus> => goApp().GetSyncStatus(),
+  getUpdateStatus: (): Promise<UpdateStatus> => goApp().GetUpdateStatus(),
+  applyUpdate: (): Promise<void> => goApp().ApplyUpdate(),
+  onUpdateStatus: (handler: (status: UpdateStatus) => void): void => {
+    (window as any).runtime?.EventsOn?.("update-status", handler);
+  },
   onSyncStatus: (handler: (status: SyncStatus) => void): void => {
     (window as any).runtime?.EventsOn?.("sync-status", handler);
   },

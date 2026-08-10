@@ -148,6 +148,15 @@
     appState.requestDelete(entry.path, entry.name, entry.isDir);
   }
 
+  async function revealInExplorer() {
+    closeMenu();
+    try {
+      await api.revealInExplorer(entry.path);
+    } catch (e) {
+      appState.showToast(`${t("toast.revealFailed")}: ${e}`);
+    }
+  }
+
   // Reordering/moving a row is driven by plain pointer events rather than
   // native HTML5 Drag and Drop (see dragController.ts for why). pointerdown
   // just hands off to the shared controller, which hit-tests and reports
@@ -234,6 +243,8 @@
       <button onclick={newFolder}><Icon name="folder-plus" size={14} /> {t("tree.newFolder")}</button>
       <div class="menu-sep"></div>
     {/if}
+    <button onclick={revealInExplorer}><Icon name="open" size={14} /> {t("tabs.revealInExplorer")}</button>
+    <div class="menu-sep"></div>
     <button onclick={startRename}><Icon name="rename" size={14} /> {t("tree.rename")}</button>
     <button class="danger" onclick={doDelete}><Icon name="trash" size={14} /> {t("tree.delete")}</button>
   </div>

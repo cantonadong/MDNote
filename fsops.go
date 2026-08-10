@@ -66,6 +66,9 @@ func (a *App) ListDir(dirPath string) ([]FileEntry, error) {
 		name := e.Name()
 		full := filepath.Join(dirPath, name)
 		if e.IsDir() {
+			if strings.EqualFold(name, "Images") {
+				continue
+			}
 			result = append(result, FileEntry{Name: name, Path: full, IsDir: true})
 		} else if strings.EqualFold(filepath.Ext(name), ".md") {
 			result = append(result, FileEntry{Name: name, Path: full, IsDir: false})

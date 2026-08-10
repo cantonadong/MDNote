@@ -4,6 +4,8 @@ import {main} from '../models';
 
 export function AddDictionaryWord(arg1:string):Promise<main.Settings>;
 
+export function ApplyUpdate():Promise<void>;
+
 export function Basename(arg1:string):Promise<string>;
 
 export function CleanupUnusedImages(arg1:Array<string>):Promise<void>;
@@ -23,6 +25,8 @@ export function GetInitialFile():Promise<string>;
 export function GetSettings():Promise<main.Settings>;
 
 export function GetSyncStatus():Promise<main.SyncStatus>;
+
+export function GetUpdateStatus():Promise<main.UpdateStatus>;
 
 export function ImageDataURL(arg1:string):Promise<string>;
 
@@ -62,7 +66,7 @@ export function SaveOpenTabs(arg1:Array<string>,arg2:string):Promise<void>;
 
 export function SavePdfDialog(arg1:string,arg2:string):Promise<string>;
 
-export function SaveSyncSettings(arg1:boolean,arg2:string,arg3:string,arg4:string,arg5:number):Promise<main.Settings>;
+export function SaveSyncSettings(arg1:boolean,arg2:string,arg3:string,arg4:string,arg5:number,arg6:boolean):Promise<main.Settings>;
 
 export function SelectRootDir():Promise<main.Settings>;
 

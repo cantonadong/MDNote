@@ -30,8 +30,10 @@ export namespace main {
 	    syncUsername: string;
 	    syncPassword: string;
 	    syncIntervalMinutes: number;
+	    syncVerified: boolean;
 	    lastSyncTime: string;
 	    lastSyncError: string;
+	    lastUpdateCheckDate: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -52,8 +54,10 @@ export namespace main {
 	        this.syncUsername = source["syncUsername"];
 	        this.syncPassword = source["syncPassword"];
 	        this.syncIntervalMinutes = source["syncIntervalMinutes"];
+	        this.syncVerified = source["syncVerified"];
 	        this.lastSyncTime = source["lastSyncTime"];
 	        this.lastSyncError = source["lastSyncError"];
+	        this.lastUpdateCheckDate = source["lastUpdateCheckDate"];
 	    }
 	}
 	export class SyncResult {
@@ -96,6 +100,19 @@ export namespace main {
 	        this.filesSynced = source["filesSynced"];
 	    }
 	}
+	export class UpdateStatus {
+	    ready: boolean;
+	    version: string;
+
+	    static createFrom(source: any = {}) {
+	        return new UpdateStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ready = source["ready"];
+	        this.version = source["version"];
+	    }
+	}
 
 }
-

@@ -12,10 +12,19 @@
     appState.settings.outlineAutoNumber ? numberOutline(appState.outlineItems) : null,
   );
   let emptyHeading = $derived(t("outline.emptyHeading"));
+  let collapsed = $state(false);
 </script>
 
-<aside class="outline">
-  <div class="outline-title">{t("outline.title")}</div>
+<aside class="outline" class:collapsed>
+  {#if collapsed}
+    <button class="rail-btn" title={t("outline.title")} aria-label={t("outline.title")} onclick={() => (collapsed = false)}>
+      <span>≡</span>
+    </button>
+  {:else}
+  <div class="outline-title">
+    <span>{t("outline.title")}</span>
+    <button title="折叠大纲" aria-label="折叠大纲" onclick={() => (collapsed = true)}>›</button>
+  </div>
   {#if appState.outlineItems.length === 0}
     <div class="empty">{t("outline.empty")}</div>
   {:else}
@@ -33,6 +42,7 @@
       {/each}
     </ul>
   {/if}
+  {/if}
 </aside>
 
 <style>
@@ -44,7 +54,21 @@
     overflow-y: auto;
     padding: 12px 8px;
   }
+  .outline.collapsed { width: 32px; padding: 0; overflow: hidden; }
+  .rail-btn,
+  .outline-title button {
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .rail-btn { width: 31px; height: 40px; font-size: 18px; }
+  .rail-btn:hover,
+  .outline-title button:hover { background: var(--hover-bg); color: var(--text-primary); }
   .outline-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     font-size: 11.5px;
     font-weight: 600;
     color: var(--text-secondary);
@@ -52,6 +76,7 @@
     letter-spacing: 0.4px;
     padding: 0 6px 8px;
   }
+  .outline-title button { width: 24px; height: 24px; border-radius: 4px; font-size: 18px; }
   .empty {
     font-size: 12.5px;
     color: var(--text-secondary);

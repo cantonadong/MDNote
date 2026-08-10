@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { Editor } from "@tiptap/core";
   import { TextSelection } from "@tiptap/pm/state";
+  import { CellSelection, TableMap, deleteCellSelection } from "@tiptap/pm/tables";
   import { Fragment, type Node as PMNode } from "@tiptap/pm/model";
   import StarterKit from "@tiptap/starter-kit";
   import { Markdown } from "tiptap-markdown";
@@ -38,6 +39,7 @@
   import { MdImage } from "$lib/editor/nodes/image";
   import { SlashTrigger } from "$lib/editor/nodes/slashTrigger";
   import { FullwidthHeadingShortcut } from "$lib/editor/nodes/fullwidthShortcuts";
+  import { CodeBlock } from "$lib/editor/nodes/codeBlock";
   import { slashMenuState } from "$lib/editor/slashMenu.svelte";
   import {
     type TableRef,
@@ -52,8 +54,10 @@
     removeRows as tableRemoveRows,
     deleteRow as tableDeleteRow,
     addColumns as tableAddColumns,
+    addCheckboxColumn as tableAddCheckboxColumn,
     removeColumns as tableRemoveColumns,
     deleteColumn as tableDeleteColumn,
+    deleteSelectedRowsAndColumns as tableDeleteSelectedRowsAndColumns,
     deleteTable as tableDeleteTable,
     setShowIndexColumn,
     setColumnWidths,
@@ -227,6 +231,10 @@
   let hoveredRowIndex = $state<number | null>(null);
   let hoveredColIndex = $state<number | null>(null);
   let imageMenu = $state<{ pos: number; x: number; y: number; centered: boolean; widthPercent: number; src: string } | null>(null);
+  let tableCellSelectionRect = $state<{ left: number; top: number; width: number; height: number } | null>(null);
+  let tableSelectionToolbarVisible = $state(false);
+  let tableSelectionToolbarPinned = false;
+  let tableSelectionToolbarHideTimer: ReturnType<typeof setTimeout> | null = null;
   let imageResizeActive = $state(false);
   let imageResizeSession: { apply: (clientX: number) => void; finish: (commit: boolean, clientX?: number) => void } | null = null;
   let suppressImageClickUntil = 0;
@@ -331,6 +339,14 @@
 
   function currentTableFitTargetWidth() {
     return Math.max(240, Math.floor(element?.getBoundingClientRect().width || 872));
+  }
+
+  function addTableCheckboxColumn() {
+    if (!editor || !tableHeaderMenu) return;
+    const node = editor.state.doc.nodeAt(tableHeaderMenu.tablePos);
+    if (!node || node.type.name !== "table") return;
+    tableAddCheckboxColumn(editor, { node, pos: tableHeaderMenu.tablePos });
+    tableHeaderMenu = null;
   }
 
   function defaultTableColumnWidths() {
@@ -686,6 +702,9 @@
   function syncActiveTableCell() {
     if (!editor) return;
     editor.view.dom.querySelectorAll(".active-table-cell").forEach((el) => el.classList.remove("active-table-cell"));
+    // A rectangular cell selection has its own single outer outline. Do
+    // not also draw the editing-cell inset border inside that rectangle.
+    if (editor.state.selection instanceof CellSelection) return;
     const from = editor.state.selection.$from;
     for (let depth = from.depth; depth > 0; depth--) {
       const node = from.node(depth);
@@ -693,6 +712,85 @@
       const dom = editor.view.nodeDOM(from.before(depth)) as HTMLElement | null;
       dom?.classList.add("active-table-cell");
       return;
+    }
+  }
+
+  function syncTableCellSelectionRect() {
+    if (!editor || !wrapperEl || !(editor.state.selection instanceof CellSelection)) {
+      tableCellSelectionRect = null;
+      tableSelectionToolbarVisible = false;
+      return;
+    }
+    requestAnimationFrame(() => {
+      if (!editor || !wrapperEl || !(editor.state.selection instanceof CellSelection)) {
+        tableCellSelectionRect = null;
+        tableSelectionToolbarVisible = false;
+        return;
+      }
+      const cells = Array.from(editor.view.dom.querySelectorAll<HTMLElement>("td.selectedCell, th.selectedCell"));
+      if (!cells.length) {
+        tableCellSelectionRect = null;
+        tableSelectionToolbarVisible = false;
+        return;
+      }
+      const wrapper = wrapperEl.getBoundingClientRect();
+      const rects = cells.map((cell) => cell.getBoundingClientRect());
+      const left = Math.min(...rects.map((rect) => rect.left));
+      const right = Math.max(...rects.map((rect) => rect.right));
+      const top = Math.min(...rects.map((rect) => rect.top));
+      const bottom = Math.max(...rects.map((rect) => rect.bottom));
+      tableCellSelectionRect = {
+        left: left - wrapper.left,
+        top: top - wrapper.top,
+        width: right - left,
+        height: bottom - top,
+      };
+    });
+  }
+
+  function showTableSelectionToolbar() {
+    if (tableSelectionToolbarHideTimer) clearTimeout(tableSelectionToolbarHideTimer);
+    tableSelectionToolbarHideTimer = null;
+    tableSelectionToolbarVisible = true;
+  }
+
+  function scheduleHideTableSelectionToolbar() {
+    if (tableSelectionToolbarHideTimer) clearTimeout(tableSelectionToolbarHideTimer);
+    tableSelectionToolbarHideTimer = setTimeout(() => {
+      tableSelectionToolbarVisible = false;
+      tableSelectionToolbarPinned = false;
+      tableSelectionToolbarHideTimer = null;
+    }, 180);
+  }
+
+  function onTableCellSelectionFinished() {
+    syncTableCellSelectionRect();
+    tableSelectionToolbarPinned = true;
+    showTableSelectionToolbar();
+  }
+
+  function pointInsideTableSelectionUI(clientX: number, clientY: number): boolean {
+    if (!editor) return false;
+    const cells = Array.from(editor.view.dom.querySelectorAll<HTMLElement>("td.selectedCell, th.selectedCell"));
+    if (cells.some((cell) => {
+      const rect = cell.getBoundingClientRect();
+      return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+    })) return true;
+    const toolbar = wrapperEl?.querySelector<HTMLElement>(".table-cell-selection-toolbar");
+    if (!toolbar) return false;
+    const rect = toolbar.getBoundingClientRect();
+    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+  }
+
+  function onWindowTableSelectionMouseMove(e: MouseEvent) {
+    if (!tableCellSelectionRect) return;
+    if (pointInsideTableSelectionUI(e.clientX, e.clientY)) {
+      showTableSelectionToolbar();
+      tableSelectionToolbarPinned = false;
+    } else if (tableSelectionToolbarPinned) {
+      tableSelectionToolbarPinned = false;
+    } else if (tableSelectionToolbarVisible) {
+      scheduleHideTableSelectionToolbar();
     }
   }
 
@@ -880,6 +978,19 @@
       : repeatedSize([TABLE_NEW_COLUMN_WIDTH], adjust.count, TABLE_NEW_COLUMN_WIDTH);
   }
 
+  function colRemovalPreviewRect(gutter: TableGutter, count: number) {
+    const selected = gutter.cols.slice(Math.max(0, gutter.cols.length - count));
+    const visible = tableVisibleRect(gutter);
+    if (!selected.length) return { left: visible.right, width: 0, offsets: [] as number[] };
+    const left = Math.max(visible.left, selected[0].left);
+    const right = Math.min(visible.right, selected[selected.length - 1].right);
+    const offsets = selected
+      .slice(0, -1)
+      .map((col) => col.right - left)
+      .filter((x) => x > 0 && x < right - left);
+    return { left, width: Math.max(0, right - left), offsets };
+  }
+
   function trailingWidthStepCount(widths: number[], distance: number, cap: number) {
     if (distance <= 0 || cap <= 0) return 0;
     let total = 0;
@@ -954,8 +1065,9 @@
       tableRowAdjust = null;
       tableDimensionLabel = null;
       const ref = currentTableRef();
-      if (ref && adjust) {
-        if (adjust.removing) tableRemoveRows(editor!, ref, rowCount(ref.node) - adjust.count, adjust.count);
+      if (ref) {
+        if (!adjust) tableAddRows(editor!, ref, rowCount(ref.node), 1);
+        else if (adjust.removing) tableRemoveRows(editor!, ref, rowCount(ref.node) - adjust.count, adjust.count);
         else tableAddRows(editor!, ref, rowCount(ref.node), adjust.count);
       }
       tableGutter = null;
@@ -1028,8 +1140,9 @@
       tableColAdjust = null;
       tableDimensionLabel = null;
       const ref = currentTableRef();
-      if (ref && adjust) {
-        if (adjust.removing) tableRemoveColumns(editor!, ref, colCount(ref.node) - adjust.count, adjust.count);
+      if (ref) {
+        if (!adjust) tableAddColumns(editor!, ref, colCount(ref.node), 1);
+        else if (adjust.removing) tableRemoveColumns(editor!, ref, colCount(ref.node) - adjust.count, adjust.count);
         else tableAddColumns(editor!, ref, colCount(ref.node), adjust.count);
       }
       tableGutter = null;
@@ -1657,6 +1770,20 @@
     showImageMenuForFigure(figure, pos, node);
   }
 
+  function onEditorImageContextMenu(e: MouseEvent) {
+    const target = e.target as HTMLElement | null;
+    const surface = target?.matches?.("img, figcaption[data-role='missing']") ? target : null;
+    const figure = surface?.closest?.('figure[data-type="mdnote-image"]') as HTMLElement | null;
+    if (!figure || !editor) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    const pos = editor.view.posAtDOM(figure, 0);
+    const node = editor.state.doc.nodeAt(pos);
+    if (!node || node.type.name !== "mdImage") return false;
+    showImageMenuForFigure(figure, pos, node);
+    return true;
+  }
+
   function showImageMenuForFigure(figure: HTMLElement, pos: number, node: PMNode) {
     if (!wrapperEl) return;
     const surface = figure.matches('[data-invalid="true"]')
@@ -1713,6 +1840,17 @@
       await api.saveImageAs(imageMenu.src);
     } catch (err) {
       appState.showToast(`${t("toast.saveImageFailed")}: ${err}`);
+    }
+  }
+
+  async function revealImageInExplorer(e: MouseEvent) {
+    e.stopPropagation();
+    if (!imageMenu) return;
+    const path = imageMenu.src.replace(/^file:\/\/\//i, "").replace(/\//g, "\\");
+    try {
+      await api.revealInExplorer(path);
+    } catch (err) {
+      appState.showToast(`${t("toast.revealFailed")}: ${err}`);
     }
   }
 
@@ -2248,6 +2386,50 @@
       else chain.unsetUnderline().unsetMark("wavyUnderline").setMark("dotUnderline");
     }
     chain.run();
+  }
+
+  function clearSelectedTableCells() {
+    if (!editor || !(editor.state.selection instanceof CellSelection)) return;
+    deleteCellSelection(editor.state, editor.view.dispatch);
+  }
+
+  async function copySelectedTableCells() {
+    if (!editor || !(editor.state.selection instanceof CellSelection)) return;
+    // Let ProseMirror serialize the CellSelection itself. It puts both a
+    // real HTML table and tab/newline plain text on the clipboard. The
+    // table plugin consequently pastes a table outside tables, and inside
+    // another table uses its rectangular-cell paste path (which grows the
+    // destination table when the rectangle does not fit).
+    editor.view.focus();
+    if (!document.execCommand("copy")) {
+      const text = Array.from(editor.view.dom.querySelectorAll<HTMLElement>("td.selectedCell, th.selectedCell"))
+        .reduce((rows, cell) => {
+          const row = cell.closest("tr") as HTMLTableRowElement | null;
+          if (!row) return rows;
+          const last = rows.at(-1);
+          if (!last || last.el !== row) rows.push({ el: row, values: [] });
+          rows.at(-1)!.values.push((cell.innerText || cell.textContent || "").trim());
+          return rows;
+        }, [] as { el: HTMLTableRowElement; values: string[] }[])
+        .map((row) => row.values.join("\t"))
+        .join("\n");
+      await navigator.clipboard.writeText(text);
+    }
+  }
+
+  function deleteSelectedTableRowsAndColumns() {
+    if (!editor || !(editor.state.selection instanceof CellSelection)) return;
+    const selection = editor.state.selection;
+    const ref = findTable(editor, selection.$anchorCell.pos);
+    if (!ref) return;
+    const tableStart = ref.pos + 1;
+    const rect = TableMap.get(ref.node).rectBetween(
+      selection.$anchorCell.pos - tableStart,
+      selection.$headCell.pos - tableStart,
+    );
+    tableDeleteSelectedRowsAndColumns(editor, ref, rect.top, rect.bottom, rect.left, rect.right);
+    tableCellSelectionRect = null;
+    tableSelectionToolbarVisible = false;
   }
 
   function clearSelectionFormatting(e: MouseEvent) {
@@ -3283,12 +3465,14 @@
       extensions: [
         SlashTrigger,
         StarterKit.configure({
+          codeBlock: false,
           // Its default click-to-open just calls window.open, which inside
           // WebView2 spawns another embedded webview rather than the
           // user's actual browser — LinkClickHandler (links.ts) handles
           // opening via the system default browser instead.
           link: { openOnClick: false },
         }),
+        CodeBlock,
         FullwidthHeadingShortcut,
         Markdown.configure({ html: true, transformPastedText: true }),
         SearchHighlight,
@@ -3343,6 +3527,7 @@
         updateHandle();
         updateSlash();
         syncActiveTableCell();
+        syncTableCellSelectionRect();
         updateSelectionToolbar();
       },
       onFocus: () => {
@@ -3367,10 +3552,12 @@
         syncTableHeaderAttrs();
         syncImageMenuTarget();
         syncActiveTableCell();
+        syncTableCellSelectionRect();
         queueTableWrapperSync();
       },
     });
     editorBridge.instance = editor;
+    editor.view.dom.addEventListener("mdnote:cell-selection-finished", onTableCellSelectionFinished);
     editorBridge.scrollToPos = scrollToPos;
     editorBridge.scrollToRange = scrollToRange;
     editorBridge.resetZoom = resetZoom;
@@ -3383,12 +3570,16 @@
     syncUndoRedo();
     scrollEl?.addEventListener("scroll", onEditorScroll, { passive: true });
     window.addEventListener("resize", queueTableWrapperSync);
+    window.addEventListener("mousemove", onWindowTableSelectionMouseMove, true);
   });
 
   onDestroy(() => {
     if (debounceHandle) clearTimeout(debounceHandle);
+    if (tableSelectionToolbarHideTimer) clearTimeout(tableSelectionToolbarHideTimer);
     scrollEl?.removeEventListener("scroll", onEditorScroll);
     window.removeEventListener("resize", queueTableWrapperSync);
+    window.removeEventListener("mousemove", onWindowTableSelectionMouseMove, true);
+    editor?.view.dom.removeEventListener("mdnote:cell-selection-finished", onTableCellSelectionFinished);
     slashMenuState.onSelect = null;
     slashMenuState.close();
     editor?.destroy();
@@ -3544,6 +3735,27 @@
         </button>
         <button class="image-reset-btn" onmousedown={preventBlur} onclick={resetImageSize}>{t("image.resetSize")}</button>
         <button class="image-reset-btn" onmousedown={preventBlur} onclick={saveImageAs}>{t("image.saveAs")}</button>
+        <button class="image-reset-btn" onmousedown={preventBlur} onclick={revealImageInExplorer}>{t("tabs.revealInExplorer")}</button>
+      </div>
+    {/if}
+    {#if tableCellSelectionRect}
+      <div
+        class="table-cell-selection-outline"
+        style={`left:${tableCellSelectionRect.left / zoomScale}px; top:${tableCellSelectionRect.top / zoomScale}px; width:${tableCellSelectionRect.width / zoomScale}px; height:${tableCellSelectionRect.height / zoomScale}px`}
+      ></div>
+    {/if}
+    {#if tableCellSelectionRect && tableSelectionToolbarVisible}
+      <div
+        class="table-cell-selection-toolbar"
+        style={`left:${(tableCellSelectionRect.left + tableCellSelectionRect.width / 2) / zoomScale}px; top:${tableCellSelectionRect.top / zoomScale}px`}
+        onclick={(e) => e.stopPropagation()}
+        onmouseenter={showTableSelectionToolbar}
+        onmouseleave={scheduleHideTableSelectionToolbar}
+        role="presentation"
+      >
+        <button onmousedown={preventBlur} onclick={copySelectedTableCells}>{t("table.copySelectedCells")}</button>
+        <button onmousedown={preventBlur} onclick={clearSelectedTableCells}>{t("table.clearSelectedCells")}</button>
+        <button class="menu-danger" onmousedown={preventBlur} onclick={deleteSelectedTableRowsAndColumns}>{t("table.deleteSelectedRowsAndColumns")}</button>
       </div>
     {/if}
     {#if dropIndicatorTop !== null}
@@ -3766,11 +3978,12 @@
         {@const colPreviewWidth = sumSizes(colPreview)}
         {@const visibleTable = tableVisibleRect(tableGutter)}
         {#if tableColAdjust.removing}
+          {@const removalRect = colRemovalPreviewRect(tableGutter, tableColAdjust.count)}
           <div
             class="table-resize-remove table-preview-grid"
-            style={`left:${Math.max(visibleTable.left, visibleTable.right - colPreviewWidth) / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px; width:${Math.min(colPreviewWidth, visibleTable.width) / zoomScale}px`}
+            style={`left:${removalRect.left / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px; width:${removalRect.width / zoomScale}px`}
           >
-            {#each internalOffsets(colPreview) as x}
+            {#each removalRect.offsets as x}
               <span class="table-preview-vline" style={`left:${x / zoomScale}px`}></span>
             {/each}
             {#each internalOffsets(tableGutter.rowHeights) as y}
@@ -3846,6 +4059,10 @@
         <button onmousedown={preventBlur} onclick={fitColumnsToContentAction}>
           <Icon name="columns" size={14} />
           <span>{t("table.fitColumnsToContent")}</span>
+        </button>
+        <button onmousedown={preventBlur} onclick={addTableCheckboxColumn}>
+          <Icon name="check-square" size={14} />
+          <span>{t("table.addCheckboxColumn")}</span>
         </button>
         <button onmousedown={preventBlur} onclick={fitTableToWidthAction}>
           <Icon name="columns" size={14} />
@@ -3932,7 +4149,12 @@
         {/if}
       </div>
     {/if}
-    <div class="editor-content-col" bind:this={element} oncontextmenu={onEditorContextMenu} role="presentation"></div>
+    <div
+      class="editor-content-col"
+      bind:this={element}
+      oncontextmenu={(e) => !onEditorImageContextMenu(e) && onEditorContextMenu(e)}
+      role="presentation"
+    ></div>
   </div>
 </div>
 {#if grammarMenu}
@@ -4259,6 +4481,43 @@
     font-family: "Cascadia Code", "Consolas", "Microsoft YaHei UI", "PingFang SC", ui-monospace, monospace;
     font-size: 0.9em;
   }
+  .editor-content-col :global(.tiptap .code-block-shell) {
+    position: relative;
+    margin: 0.6em 0;
+  }
+  .editor-content-col :global(.tiptap .code-block-shell pre) {
+    margin: 0;
+    padding-bottom: 40px;
+  }
+  .editor-content-col :global(.tiptap .code-language-select) {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    z-index: 1;
+    max-width: 130px;
+    height: 26px;
+    padding: 0 24px 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--code-bg);
+    color: var(--text-secondary);
+    font: 12px/1 system-ui, sans-serif;
+    cursor: pointer;
+  }
+  .editor-content-col :global(.tiptap .hljs-keyword),
+  .editor-content-col :global(.tiptap .hljs-selector-tag),
+  .editor-content-col :global(.tiptap .hljs-literal) { color: #9c36b5; }
+  .editor-content-col :global(.tiptap .hljs-string),
+  .editor-content-col :global(.tiptap .hljs-title),
+  .editor-content-col :global(.tiptap .hljs-section) { color: #087f5b; }
+  .editor-content-col :global(.tiptap .hljs-number),
+  .editor-content-col :global(.tiptap .hljs-type),
+  .editor-content-col :global(.tiptap .hljs-built_in) { color: #1864ab; }
+  .editor-content-col :global(.tiptap .hljs-comment),
+  .editor-content-col :global(.tiptap .hljs-quote) { color: #868e96; font-style: italic; }
+  .editor-content-col :global(.tiptap .hljs-meta),
+  .editor-content-col :global(.tiptap .hljs-operator),
+  .editor-content-col :global(.tiptap .hljs-punctuation) { color: #e67700; }
   .editor-content-col :global(.tiptap code) {
     background: var(--code-bg);
     border-radius: 3px;
@@ -4361,18 +4620,70 @@
      to .editor-scroll's width specifically. */
   .editor-content-col :global(.tiptap th),
   .editor-content-col :global(.tiptap td) {
+    position: relative;
+    cursor: default;
     border: 1px solid var(--border);
     padding: 6px 10px;
     min-width: 50px;
     vertical-align: top;
+  }
+  .editor-content-col :global(.tiptap td p),
+  .editor-content-col :global(.tiptap th p),
+  .editor-content-col :global(.tiptap td a),
+  .editor-content-col :global(.tiptap th a),
+  .editor-content-col :global(.tiptap td summary),
+  .editor-content-col :global(.tiptap th summary) {
+    cursor: text;
   }
   .editor-content-col :global(.tiptap th.active-table-cell),
   .editor-content-col :global(.tiptap td.active-table-cell) {
     box-shadow: inset 0 0 0 2px #2383e2;
   }
   .editor-content-col :global(.tiptap .selectedCell::after) {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 2;
     background: rgba(35, 131, 226, 0.12);
+    pointer-events: none;
   }
+  .table-cell-selection-outline {
+    position: absolute;
+    box-sizing: border-box;
+    border: 2px solid #2383e2;
+    pointer-events: none;
+    z-index: 38;
+  }
+  .table-cell-selection-toolbar {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    transform: translate(-50%, calc(-100% - 8px));
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--content-bg);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
+    white-space: nowrap;
+    z-index: 70;
+  }
+  .table-cell-selection-toolbar button {
+    border: 0;
+    border-radius: 4px;
+    padding: 6px 9px;
+    background: transparent;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    width: 100%;
+    text-align: left;
+  }
+  .table-cell-selection-toolbar button:hover { background: var(--hover-bg); }
+  .table-cell-selection-toolbar button.menu-danger { color: #e03e3e; }
+  .table-cell-selection-toolbar button.menu-danger:hover { background: rgba(224, 62, 62, 0.1); }
   .editor-content-col :global(.tiptap th) {
     text-align: left;
     /* The browser's UA stylesheet bolds <th> by default. Every table's
