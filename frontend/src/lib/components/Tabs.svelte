@@ -398,8 +398,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 30px;
-    height: 30px;
+    width: 26px;
+    height: 26px;
     margin-left: 4px;
     border: none;
     background: transparent;

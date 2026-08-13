@@ -37,6 +37,35 @@ body {
   color: var(--text-primary);
   background: var(--content-bg);
   -webkit-font-smoothing: antialiased;
+  /* App chrome is interactive UI, not document text. Keeping selection off
+     by default prevents a drag that begins/ends outside the editor from
+     painting native blue selection across tabs, outline, menus and status
+     labels. Editable surfaces are explicitly opted back in below. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Native text selection belongs only to real editing controls. Do not use a
+   broad `input` selector: checkbox/radio/color controls are UI as well. */
+textarea,
+input:not([type]),
+input[type="text"],
+input[type="search"],
+input[type="url"],
+input[type="email"],
+input[type="tel"],
+input[type="password"],
+input[type="number"],
+[contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Atom/node-view controls can live inside the contenteditable tree but are
+   still buttons rather than editable document text. */
+[contenteditable="false"] {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 button,

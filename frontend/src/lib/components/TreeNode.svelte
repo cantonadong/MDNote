@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import RasterIcon from "./RasterIcon.svelte";
   import TreeNode from "./TreeNode.svelte";
   import NewEntryRow from "./NewEntryRow.svelte";
   import { appState, stripMdExt } from "$lib/appState.svelte";
@@ -58,6 +59,17 @@
     if (entry.isDir && appState.pendingExpandPath === entry.path && !expanded) {
       void toggle();
     }
+  });
+
+  // Reveal the directory selected from the foreground tab when the sidebar
+  // opens. Only ancestors expand; the selected directory itself keeps its
+  // current open/closed state and remains user-controlled.
+  $effect(() => {
+    const selectedPath = appState.selectedEntry?.path;
+    if (!entry.isDir || !selectedPath || expanded) return;
+    const entryPrefix = entry.path.replace(/\//g, "\\").toLowerCase() + "\\";
+    const normalizedSelected = selectedPath.replace(/\//g, "\\").toLowerCase();
+    if (normalizedSelected.startsWith(entryPrefix)) void toggle();
   });
 
   async function toggle() {
@@ -196,7 +208,9 @@
     {:else}
       <span class="chevron-spacer"></span>
     {/if}
-    <span class="row-icon"><Icon name={entry.isDir ? "folder" : "file"} size={14} /></span>
+    <span class="row-icon" class:folder-icon={entry.isDir} class:file-icon={!entry.isDir}>
+      <RasterIcon name={entry.isDir ? "folder" : "file"} size={15} />
+    </span>
     {#if renaming}
       <input
         class="rename-input"
@@ -317,8 +331,20 @@
   .row-icon {
     display: flex;
     align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
     color: var(--text-secondary);
     flex-shrink: 0;
+  }
+  .row-icon.folder-icon {
+    color: #b7791f;
+    background: rgba(217, 155, 40, 0.14);
+  }
+  .row-icon.file-icon {
+    color: #3974b9;
+    background: rgba(57, 116, 185, 0.11);
   }
   .row-label {
     overflow: hidden;

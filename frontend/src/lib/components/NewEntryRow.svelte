@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import Icon from "./Icon.svelte";
+  import RasterIcon from "./RasterIcon.svelte";
   import { appState } from "$lib/appState.svelte";
 
   let { depth = 0, isDir }: { depth?: number; isDir: boolean } = $props();
@@ -30,7 +30,9 @@
 
 <div class="row" style={`padding-left:${8 + depth * 16}px`}>
   <span class="chevron-spacer"></span>
-  <span class="row-icon"><Icon name={isDir ? "folder" : "file"} size={14} /></span>
+  <span class="row-icon" class:folder-icon={isDir} class:file-icon={!isDir}>
+    <RasterIcon name={isDir ? "folder" : "file"} size={15} />
+  </span>
   <input
     class="name-input"
     bind:this={inputEl}
@@ -60,8 +62,20 @@
   .row-icon {
     display: flex;
     align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
     color: var(--text-secondary);
     flex-shrink: 0;
+  }
+  .row-icon.folder-icon {
+    color: #b7791f;
+    background: rgba(217, 155, 40, 0.14);
+  }
+  .row-icon.file-icon {
+    color: #3974b9;
+    background: rgba(57, 116, 185, 0.11);
   }
   .name-input {
     flex: 1;

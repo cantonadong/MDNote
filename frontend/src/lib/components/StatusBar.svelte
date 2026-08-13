@@ -33,7 +33,7 @@
 
 <style>
   .status-bar {
-    height: 26px;
+    height: 34px;
     flex-shrink: 0;
     display: flex;
     align-items: center;

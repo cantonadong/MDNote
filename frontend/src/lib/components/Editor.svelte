@@ -14,6 +14,7 @@
   import { Table, TableCell, TableHeader } from "$lib/editor/nodes/table";
   import { TableRow } from "@tiptap/extension-table-row";
   import Icon from "./Icon.svelte";
+  import RasterIcon from "./RasterIcon.svelte";
   import { api } from "$lib/api";
   import { appState, type LinkPick } from "$lib/appState.svelte";
   import { t } from "$lib/i18n.svelte";
@@ -99,7 +100,7 @@
   // "+" button) inserts a new block after the current line; "change" (the
   // ⠿ drag handle, clicked rather than dragged) converts the current line
   // in place.
-  let menuMode: "add" | "change" = "add";
+  let menuMode = $state<"add" | "actions">("add");
   let slashPos = $state({ top: 0, left: 0 });
   // Icon name for the "+" handle: null (generic plus) for a plain paragraph,
   // or the matching blockTypes icon when the hovered/cursor block already
@@ -1578,10 +1579,10 @@
     const rect = dom.getBoundingClientRect();
     const contentRect = element?.getBoundingClientRect() ?? rect;
     return {
-      top: rect.top - containerRect.top,
-      left: contentRect.left - containerRect.left,
-      width: contentRect.width,
-      height: rect.height,
+      top: rect.top - containerRect.top - 4,
+      left: contentRect.left - containerRect.left - 8,
+      width: contentRect.width + 16,
+      height: rect.height + 8,
     };
   }
 
@@ -1855,8 +1856,7 @@
   }
 
   function onWrapperPointerDown(e: PointerEvent) {
-    if (onImageResizePointerDown(e)) return;
-    onMarginPointerDown(e);
+    onImageResizePointerDown(e);
   }
 
   function onWrapperMouseDown(e: MouseEvent) {
@@ -2203,6 +2203,10 @@
   // instead.
   let multiSelectRange = $state<{ from: number; to: number } | null>(null);
   let multiSelectRects = $state<{ top: number; height: number }[]>([]);
+  // The translucent drag marquee shown while the pointer is held in the
+  // left gutter. Block highlights remain separate so the final selection
+  // keeps the rounded, one-overlay-per-block treatment.
+  let multiSelectMarquee = $state<{ left: number; top: number; width: number; height: number } | null>(null);
   // True only while a selected group is being dragged to a new spot — dims
   // the row overlays the same way a single dragged block dims itself, so it
   // reads as "picked up" instead of just sitting there unselected-looking.
@@ -2473,7 +2477,7 @@
       const dom = editor!.view.nodeDOM(offset) as HTMLElement | null;
       if (!dom) return;
       const rect = dom.getBoundingClientRect();
-      rects.push({ top: rect.top - containerRect.top, height: rect.height });
+      rects.push({ top: rect.top - containerRect.top - 4, height: rect.height + 8 });
     });
     multiSelectRects = rects;
   }
@@ -2494,6 +2498,7 @@
   function clearMultiSelect() {
     multiSelectRange = null;
     multiSelectRects = [];
+    multiSelectMarquee = null;
     multiSelectDragging = false;
   }
 
@@ -2518,21 +2523,29 @@
 
   const MULTISELECT_DRAG_THRESHOLD = 4;
 
-  // Starts a margin drag-select: mousedown anywhere in the wrapper's own
-  // padding/margin (not on real content or one of the floating overlays)
+  // Starts a margin drag-select anywhere to the left of the editable column.
+  // Only concrete controls are excluded; transparent handle-container space
+  // and the vertical gaps beside blocks remain valid drag starting points.
   // that moves past a threshold before release selects every whole block
   // the pointer has crossed, Notion-style. A plain click (no movement)
   // instead just clears whatever selection was already showing, matching
   // "click elsewhere to deselect".
   function onMarginPointerDown(e: PointerEvent) {
-    if (e.button !== 0 || !editor) return;
+    if (e.button !== 0 || !editor || !wrapperEl) return;
     const target = e.target as HTMLElement | null;
     if (
       target?.closest?.(
-        ".tiptap, .handle-group, .block-menu, .block-drag-ghost, .block-drop-indicator, .table-gutter-btn, .table-gutter-add",
+        ".block-handle, .drag-handle, .block-menu, .block-drag-ghost, .table-gutter-btn, .table-gutter-add, .table-col-resize-hit",
       )
     )
       return;
+    // The editor-scroll listener already limits this to the editor pane. Do
+    // not clamp Y to the ProseMirror DOM box: headings, lists, tables and
+    // collapsed blocks all create real vertical gaps where a drag must still
+    // be able to start. blockPosAtClientPoint safely clamps Y to the nearest
+    // document block for those gaps.
+    const contentRect = editor.view.dom.getBoundingClientRect();
+    if (e.clientX >= contentRect.left) return;
     const anchorPos = blockPosAtClientPoint(e.clientX, e.clientY);
     if (anchorPos === null) return;
     const startX = e.clientX;
@@ -2544,6 +2557,15 @@
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < MULTISELECT_DRAG_THRESHOLD) return;
         started = true;
       }
+      const wrapperRect = wrapperEl!.getBoundingClientRect();
+      const left = Math.min(startX, ev.clientX) - wrapperRect.left;
+      const top = Math.min(startY, ev.clientY) - wrapperRect.top;
+      multiSelectMarquee = {
+        left,
+        top,
+        width: Math.abs(ev.clientX - startX),
+        height: Math.abs(ev.clientY - startY),
+      };
       const currentPos = blockPosAtClientPoint(ev.clientX, ev.clientY);
       if (currentPos === null) return;
       setMultiSelectRange(anchorPos!, currentPos);
@@ -2554,6 +2576,7 @@
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);
+      multiSelectMarquee = null;
       if (started) {
         finalizeMultiSelect();
       } else {
@@ -2912,12 +2935,15 @@
         selectedBlockRect = blockRectAt(pos!);
         if (clickedNode && clickedNode.type.name === "table") {
           openTableHeaderMenu(e, pos!, clickedNode);
+        } else if (clickedNode && clickedNode.type.name === "mdImage") {
+          const figure = editor!.view.nodeDOM(pos!) as HTMLElement | null;
+          if (figure) showImageMenuForFigure(figure, pos!, clickedNode);
         } else {
           // Plain click, no drag: opens the same menu as the "+" handle, but
           // in "change" mode — always converts the current line in place
           // (per-item for a list line, via insertBlock's listContext handling)
           // regardless of whether it has content.
-          toggleMenu("change");
+          toggleMenu("actions");
         }
       }
     }
@@ -3088,11 +3114,10 @@
     }
   }
 
-  // Keys buildConvertedContent below knows how to rebuild around preserved
-  // inline content. The rest (table/horizontalRule/newPage/pageLink/
-  // fileLink) are structurally too different from a block of running text
-  // for a content-preserving "turn into" to make sense — those stay on the
-  // regular insert-a-new-block-after path in insertBlock.
+  // Every entry shown by the "turn into" submenu is handled here. Targets
+  // without their own text slot (divider/page/file link) keep the original
+  // inline content in an adjacent paragraph, so conversion never silently
+  // discards the block's contents.
   const CONVERTIBLE_KEYS = new Set([
     "paragraph",
     "h1",
@@ -3108,6 +3133,15 @@
     "callout",
     "blockquote",
     "codeBlock",
+    "table",
+    "columns2",
+    "columns3",
+    "columns4",
+    "columns5",
+    "horizontalRule",
+    "webLink",
+    "pageLink",
+    "fileLink",
   ]);
 
   // Flattens a block's text into a single run of inline content (text nodes
@@ -3133,7 +3167,7 @@
   // into whichever child position actually holds text for that type, for
   // the "turn into" flow (CONVERTIBLE_KEYS only — the caller never passes
   // anything outside that set).
-  function buildConvertedContent(key: string, inline: Record<string, unknown>[]): Record<string, unknown> {
+  function buildConvertedContent(key: string, inline: Record<string, unknown>[], extra?: LinkPick): Record<string, unknown> | Record<string, unknown>[] {
     switch (key) {
       case "h1":
       case "h2":
@@ -3161,6 +3195,67 @@
         const text = inline.map((n) => (typeof n.text === "string" ? n.text : "")).join("");
         return { type: "codeBlock", content: text ? [{ type: "text", text }] : [] };
       }
+      case "table": {
+        const widths = defaultTableColumnWidths();
+        return {
+          type: "table",
+          content: [
+            {
+              type: "tableRow",
+              content: widths.map((width, index) => ({
+                type: "tableHeader",
+                attrs: { colwidth: [width] },
+                content: [{ type: "paragraph", content: index === 0 ? inline : [] }],
+              })),
+            },
+            ...Array.from({ length: 2 }, () => ({
+              type: "tableRow",
+              content: widths.map((width) => ({ type: "tableCell", attrs: { colwidth: [width] }, content: [{ type: "paragraph" }] })),
+            })),
+          ],
+        };
+      }
+      case "columns2":
+      case "columns3":
+      case "columns4":
+      case "columns5": {
+        const count = Number(key[key.length - 1]);
+        return [
+          {
+            type: "columns",
+            attrs: { count },
+            content: Array.from({ length: count }, (_, index) => ({
+              type: "column",
+              content: [{ type: "paragraph", content: index === 0 ? inline : [] }],
+            })),
+          },
+          { type: "paragraph" },
+        ];
+      }
+      case "horizontalRule":
+        return [{ type: "horizontalRule" }, { type: "paragraph", content: inline }];
+      case "webLink": {
+        const href = extra?.path;
+        const linked = href
+          ? inline.map((item) => ({
+              ...item,
+              marks: [
+                ...((item.marks as Record<string, unknown>[] | undefined) ?? []).filter((mark) => mark.type !== "link"),
+                { type: "link", attrs: { href } },
+              ],
+            }))
+          : inline;
+        return { type: "paragraph", content: linked };
+      }
+      case "pageLink":
+      case "fileLink":
+        return [
+          {
+            type: "paragraph",
+            content: extra ? [{ type: key, attrs: { path: extra.path, id: extra.id ?? null } }] : [],
+          },
+          { type: "paragraph", content: inline },
+        ];
       default:
         return { type: "paragraph", content: inline };
     }
@@ -3326,7 +3421,7 @@
   //    "add a new block" label. The one exception is an empty line, which
   //    has nothing to preserve or displace either way, so both modes
   //    collapse to the same in-place replace for it (nothing left behind).
-  async function insertBlock(key: string, mode: "add" | "change" = "add") {
+  async function insertBlock(key: string) {
     if (!editor) return;
     const pos = hoverBlockPos ?? topLevelBlockPos();
     if (pos === null) return;
@@ -3336,7 +3431,7 @@
     const listContext = listContextAt(pos);
     const currentFormatKey = blockTypeKeyFor(node, listContext?.listNode.type.name);
     const blockEnd = pos + node.nodeSize;
-    const wantsConvert = empty || mode === "change";
+    const wantsConvert = false;
 
     let effectiveKey = key;
     let extra: LinkPick | undefined;
@@ -3354,7 +3449,7 @@
     }
     if (!editor) return;
 
-    if (wantsConvert && currentFormatKey && CONVERTIBLE_KEYS.has(effectiveKey)) {
+    if (wantsConvert && CONVERTIBLE_KEYS.has(effectiveKey)) {
       if (effectiveKey === currentFormatKey) {
         // Already this format — nothing to do (also avoids gratuitously
         // fragmenting a list into before/after pieces around a no-op).
@@ -3362,7 +3457,7 @@
         return;
       }
       const inline = extractInlineContent(node);
-      const content = buildConvertedContent(effectiveKey, inline);
+      const content = buildConvertedContent(effectiveKey, inline, extra);
       if (listContext) {
         convertListItem(listContext, content);
       } else {
@@ -3389,6 +3484,33 @@
     }
     menuOpen = false;
     updateHandle();
+  }
+
+  // Copy through ProseMirror's native clipboard pipeline so both plain text
+  // and rich HTML describe the complete block (marks, links and structure),
+  // rather than reducing it to node.textContent. The previous selection is
+  // restored immediately after the synchronous copy event has fired.
+  function copyBlockAt(pos: number, e: MouseEvent) {
+    e.stopPropagation();
+    if (!editor) return;
+    const node = editor.state.doc.nodeAt(pos);
+    if (!node) return;
+    const previousSelection = editor.state.selection;
+    const selection = TextSelection.create(editor.state.doc, pos, pos + node.nodeSize);
+    editor.view.dispatch(editor.state.tr.setSelection(selection));
+    editor.view.focus();
+    const copied = document.execCommand("copy");
+    editor.view.dispatch(editor.state.tr.setSelection(previousSelection));
+    menuOpen = false;
+    tableHeaderMenu = null;
+    imageMenu = null;
+    selectedBlockRect = null;
+    if (!copied) appState.showToast(t("block.copyFailed"));
+  }
+
+  function copyHandleBlock(e: MouseEvent) {
+    const pos = hoverBlockPos ?? topLevelBlockPos();
+    if (pos !== null) copyBlockAt(pos, e);
   }
 
   // Slash menu: replaces the current (empty, trigger-only) row in place —
@@ -3429,7 +3551,7 @@
     updateHandle();
   }
 
-  function toggleMenu(mode: "add" | "change" = "add") {
+  function toggleMenu(mode: "add" | "actions" = "add") {
     menuOpen = !menuOpen;
     menuMode = mode;
     if (menuOpen) slashMenuState.close();
@@ -3640,6 +3762,7 @@
   class="editor-scroll"
   bind:this={scrollEl}
   onwheel={onEditorWheel}
+  onpointerdown={onMarginPointerDown}
   onmousemove={onContentMouseMove}
   onmouseleave={onContentMouseLeave}
   role="presentation"
@@ -3660,6 +3783,12 @@
     role="presentation"
     style={`zoom:${editorZoom}%`}
   >
+    {#if multiSelectMarquee}
+      <div
+        class="multi-select-marquee"
+        style={`left:${multiSelectMarquee.left / zoomScale}px; top:${multiSelectMarquee.top / zoomScale}px; width:${multiSelectMarquee.width / zoomScale}px; height:${multiSelectMarquee.height / zoomScale}px`}
+      ></div>
+    {/if}
     {#each multiSelectRects as r, i (i)}
       <div
         class="row-highlight"
@@ -3684,21 +3813,21 @@
         <button
           class="block-handle"
           class:handle-lg={handleBtnSize === 30}
-          title={handleFormatIcon && handleIsEmpty ? t("block.changeFormat") : t("block.add")}
-          aria-label={handleFormatIcon && handleIsEmpty ? t("block.changeFormat") : t("block.add")}
+          title={t("block.add")}
+          aria-label={t("block.add")}
           onmousedown={preventBlur}
           onclick={(e) => {
             e.stopPropagation();
             toggleMenu("add");
           }}
         >
-          <Icon name={handleFormatIcon ?? "plus"} size={handleBtnSize === 30 ? 21 : 19} />
+          <Icon name="plus" size={handleBtnSize === 30 ? 21 : 19} />
         </button>
         <button
           class="drag-handle"
           class:handle-lg={handleBtnSize === 30}
-          title={handleFormatIcon === "table" ? t("block.dragTable") : handleFormatIcon ? t("block.dragOrChange") : t("block.drag")}
-          aria-label={handleFormatIcon === "table" ? t("block.dragTable") : handleFormatIcon ? t("block.dragOrChange") : t("block.drag")}
+          title={t("block.drag")}
+          aria-label={t("block.drag")}
           onmousedown={preventBlur}
           onpointerdown={onDragHandlePointerDown}
           onclick={(e) => e.stopPropagation()}
@@ -3707,13 +3836,20 @@
         </button>
       </div>
       {#if menuOpen}
-        <div class="block-menu" style={`top:${(handleTop + handleHeight + 2) / zoomScale}px`}>
-          {#each blockTypes as bt (bt.key)}
-            <button onmousedown={preventBlur} onclick={() => insertBlock(bt.key, menuMode)}>
-              <Icon name={bt.icon} size={14} />
-              <span>{bt.label}</span>
+        <div class="block-menu" class:handle-action-menu={menuMode === "actions"} style={`top:${(handleTop + handleHeight + 2) / zoomScale}px`}>
+          {#if menuMode === "actions"}
+            <button onmousedown={preventBlur} onclick={copyHandleBlock}>
+              <span class="menu-symbol">⧉</span>
+              <span>{t("block.copy")}</span>
             </button>
-          {/each}
+          {:else}
+            {#each blockTypes as bt (bt.key)}
+              <button onmousedown={preventBlur} onclick={() => insertBlock(bt.key)}>
+                <Icon name={bt.icon} size={14} />
+                <span>{bt.label}</span>
+              </button>
+            {/each}
+          {/if}
         </div>
       {/if}
     {/if}
@@ -3722,6 +3858,10 @@
         class="context-menu image-menu"
         style={`left:${imageMenu.x / zoomScale}px; top:${imageMenu.y / zoomScale}px; width:${IMAGE_MENU_WIDTH / zoomScale}px`}
       >
+        <button onmousedown={preventBlur} onclick={(e) => copyBlockAt(imageMenu!.pos, e)}>
+          <span class="menu-symbol">⧉</span>
+          <span>{t("block.copy")}</span>
+        </button>
         <button
           class="switch-row"
           onmousedown={preventBlur}
@@ -3773,7 +3913,7 @@
           onmousedown={preventBlur}
           onclick={(e) => toggleInlineFormat(e, "bold")}
         >
-          <Icon name="bold" size={16} />
+          <RasterIcon name="format-bold" size={18} />
         </button>
         <button
           class="selection-toolbar-btn"
@@ -3782,7 +3922,7 @@
           onmousedown={preventBlur}
           onclick={(e) => toggleInlineFormat(e, "italic")}
         >
-          <Icon name="italic" size={16} />
+          <RasterIcon name="format-italic" size={18} />
         </button>
         <button
           class="selection-toolbar-btn"
@@ -3791,7 +3931,7 @@
           onmousedown={preventBlur}
           onclick={(e) => toggleInlineFormat(e, "strike")}
         >
-          <Icon name="strikethrough" size={16} />
+          <RasterIcon name="format-strike" size={20} />
         </button>
         <button
           class="selection-toolbar-btn"
@@ -3800,7 +3940,7 @@
           onmousedown={preventBlur}
           onclick={(e) => openHighlightPicker(e, "text")}
         >
-          <Icon name="text-color" size={16} />
+          <RasterIcon name="format-text-color" size={18} />
         </button>
         <button
           class="selection-toolbar-btn"
@@ -3809,7 +3949,7 @@
           onmousedown={preventBlur}
           onclick={(e) => openHighlightPicker(e, "highlight")}
         >
-          <Icon name="highlighter" size={16} />
+          <RasterIcon name="format-highlight" size={22} />
         </button>
         <button
           class="selection-toolbar-btn"
@@ -3818,7 +3958,7 @@
           onmousedown={preventBlur}
           onclick={(e) => toggleInlineFormat(e, "wavyUnderline")}
         >
-          <Icon name="wavy-underline" size={16} />
+          <RasterIcon name="format-wavy" size={20} />
         </button>
         <button
           class="selection-toolbar-btn"
@@ -3827,7 +3967,7 @@
           onmousedown={preventBlur}
           onclick={(e) => toggleInlineFormat(e, "underline")}
         >
-          <Icon name="underline" size={16} />
+          <RasterIcon name="format-underline" size={20} />
         </button>
         <button
           class="selection-toolbar-btn"
@@ -3836,7 +3976,7 @@
           onmousedown={preventBlur}
           onclick={(e) => toggleInlineFormat(e, "dotUnderline")}
         >
-          <Icon name="dot-underline" size={16} />
+          <RasterIcon name="format-dot-underline" size={20} />
         </button>
         <button
           class="selection-toolbar-btn"
@@ -3845,7 +3985,7 @@
           onmousedown={preventBlur}
           onclick={(e) => openHighlightPicker(e, "underline")}
         >
-          <Icon name="underline-color" size={16} />
+          <RasterIcon name="format-underline-color" size={20} />
         </button>
         <button
           class="selection-toolbar-btn"
@@ -3854,7 +3994,7 @@
           onmousedown={preventBlur}
           onclick={clearSelectionFormatting}
         >
-          <Icon name="clear-formatting" size={16} />
+          <RasterIcon name="format-clear" size={20} />
         </button>
       </div>
     {/if}
@@ -4033,6 +4173,10 @@
         onclick={(e) => e.stopPropagation()}
         role="presentation"
       >
+        <button onmousedown={preventBlur} onclick={(e) => copyBlockAt(tableHeaderMenu!.tablePos, e)}>
+          <span class="menu-symbol">⧉</span>
+          <span>{t("block.copy")}</span>
+        </button>
         <button class="switch-row" onmousedown={preventBlur} onclick={toggleTableHeaderRow}>
           <span>{t("table.showHeaderRow")}</span>
           <span class="switch" class:on={tableHeaderMenu.showHeaderRow} aria-hidden="true">
@@ -4254,6 +4398,8 @@
     align-items: center;
     gap: 1px;
     z-index: 90;
+    user-select: none;
+    -webkit-user-select: none;
   }
   .block-handle,
   .drag-handle {
@@ -4271,6 +4417,14 @@
     background: transparent;
     color: var(--text-secondary);
     cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .handle-group :global(svg),
+  .handle-group :global(svg *) {
+    user-select: none;
+    -webkit-user-select: none;
+    pointer-events: none;
   }
   /* Bumped up from 28x28 when the hovered row is tall enough to fit it
      without visibly overflowing (see handleBtnSize) — e.g. a heading line. */
@@ -4335,7 +4489,14 @@
     color: var(--text-secondary);
     flex-shrink: 0;
   }
-
+  .menu-symbol {
+    width: 14px;
+    flex-shrink: 0;
+    color: var(--text-secondary);
+    text-align: center;
+    font-size: 16px;
+    line-height: 1;
+  }
   .selection-toolbar {
     position: absolute;
     z-index: 60;
@@ -5457,10 +5618,19 @@
      regardless of the block's own element type. */
   .row-highlight {
     position: absolute;
-    left: -8px;
-    right: -8px;
+    /* Notion-style block frame: every selected block shares one flush left
+       edge while retaining 8px of breathing room around plain text. It
+       begins after the handle group, so the add/drag buttons stay outside. */
+    left: 56px;
+    right: 56px;
     background: rgba(35, 131, 226, 0.13);
-    border-radius: 6px;
+    border-radius: 4px;
+    pointer-events: none;
+  }
+  .multi-select-marquee {
+    position: absolute;
+    z-index: 1;
+    background: rgba(35, 131, 226, 0.1);
     pointer-events: none;
   }
   .selected-block-highlight {

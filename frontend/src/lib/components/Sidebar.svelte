@@ -1,13 +1,46 @@
 <script lang="ts">
-  import Icon from "./Icon.svelte";
+  import RasterIcon from "./RasterIcon.svelte";
   import TreeNode from "./TreeNode.svelte";
   import NewEntryRow from "./NewEntryRow.svelte";
-  import { appState } from "$lib/appState.svelte";
+  import { appState, parentDir } from "$lib/appState.svelte";
   import { api, type FileEntry } from "$lib/api";
   import { t } from "$lib/i18n.svelte";
 
   let rootChildren = $state<FileEntry[] | null>(null);
   let collapsed = $state(false);
+
+  function selectActiveTabDirectory() {
+    const path = appState.activeTab?.path;
+    if (path) appState.selectEntry(parentDir(path), true);
+    else if (appState.effectiveRootDir) appState.selectEntry(appState.effectiveRootDir, true);
+  }
+
+  function openSidebar() {
+    collapsed = false;
+    selectActiveTabDirectory();
+  }
+
+  function closeSidebar(e: MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    collapsed = true;
+  }
+
+  function reopenSidebar(e: MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    openSidebar();
+  }
+
+  // Initial app restore is asynchronous. Once the foreground tab becomes
+  // available, use its containing folder as the sidebar's default selection;
+  // a later user selection is preserved.
+  $effect(() => {
+    const path = appState.activeTab?.path;
+    if (!collapsed && !appState.selectedEntry && path) {
+      appState.selectEntry(parentDir(path), true);
+    }
+  });
 
   async function loadRoot() {
     if (!appState.settings.rootDir) {
@@ -47,11 +80,6 @@
     appState.settings.rootDir.split(/[\\/]/).filter(Boolean).pop() ?? appState.settings.rootDir,
   );
 
-  function changeRootDir(e: MouseEvent) {
-    e.stopPropagation();
-    void appState.selectRootDir();
-  }
-
   function migrateRootDir(e: MouseEvent) {
     e.stopPropagation();
     void appState.migrateRootDir();
@@ -60,27 +88,34 @@
 
 <aside class="sidebar" class:collapsed>
   {#if collapsed}
-    <button class="collapse-rail-btn" title="MDNote" aria-label="MDNote" onclick={() => (collapsed = false)}>
-      <Icon name="chevron-right" size={16} />
+    <button type="button" class="collapse-rail-btn" title="MDNote" aria-label="MDNote" onclick={reopenSidebar}>
+      <RasterIcon name="right" size={16} />
     </button>
   {:else}
   <div class="sidebar-header">
     <span class="brand">MDNote</span>
-    <button class="collapse-btn" title="折叠侧栏" aria-label="折叠侧栏" onclick={() => (collapsed = true)}>
-      <Icon name="chevron-left" size={14} />
-    </button>
     {#if appState.settings.rootDir}
       <div class="header-actions">
+        <button type="button" class="collapse-btn" title="折叠侧栏" aria-label="折叠侧栏" onclick={closeSidebar}>
+          <RasterIcon name="left" size={16} />
+        </button>
         <button title={t("sidebar.newFile")} aria-label={t("sidebar.newFile")} onclick={newFile}
-          ><Icon name="file-plus" size={14} /></button
+          ><RasterIcon name="new" size={17} /></button
         >
         <button title={t("sidebar.newFolder")} aria-label={t("sidebar.newFolder")} onclick={newFolder}
-          ><Icon name="folder-plus" size={14} /></button
+          ><RasterIcon name="new_folder" size={17} /></button
+        >
+        <button title={t("sidebar.migrate")} aria-label={t("sidebar.migrate")} onclick={migrateRootDir}
+          ><RasterIcon name="transfer" size={17} /></button
         >
         <button title={t("sidebar.refresh")} aria-label={t("sidebar.refresh")} onclick={() => appState.refreshTree()}
-          ><Icon name="refresh" size={14} /></button
+          ><RasterIcon name="refresh" size={17} /></button
         >
       </div>
+    {:else}
+      <button type="button" class="collapse-btn" title="折叠侧栏" aria-label="折叠侧栏" onclick={closeSidebar}>
+        <RasterIcon name="left" size={16} />
+      </button>
     {/if}
   </div>
 
@@ -98,14 +133,8 @@
         title={appState.settings.rootDir}
         role="presentation"
       >
-        <span class="row-icon"><Icon name="folder" size={14} /></span>
+        <span class="row-icon folder-icon"><RasterIcon name="folder" size={15} /></span>
         <span class="root-label">{rootDirName}</span>
-        <button class="root-change-btn" title={t("sidebar.migrate")} aria-label={t("sidebar.migrate")} onclick={migrateRootDir}>
-          <Icon name="move" size={12} />
-        </button>
-        <button class="root-change-btn" title={t("sidebar.changeRoot")} aria-label={t("sidebar.changeRoot")} onclick={changeRootDir}>
-          <Icon name="refresh" size={12} />
-        </button>
       </div>
       {#if rootChildren === null}
         <div class="loading" style="padding-left:28px">{t("sidebar.loading")}</div>
@@ -136,28 +165,27 @@
       aria-label={t("sidebar.settings")}
       onclick={() => appState.openSettings()}
     >
-      <Icon name="settings" size={15} />
+      <RasterIcon name="config" size={16} />
       <span>{t("sidebar.settings")}</span>
     </button>
-    {#if appState.settings.syncVerified && appState.syncStatus.configured}
-      <button
-        class="footer-btn"
-        title={t("sidebar.sync")}
-        aria-label={t("sidebar.sync")}
-        disabled={appState.syncStatus.syncing}
-        onclick={() => void appState.syncNow()}
-      >
-        <Icon name="refresh" size={15} />
-        <span>{t("sidebar.sync")}</span>
-      </button>
-    {/if}
+    <button
+      class="footer-btn"
+      title={t("sidebar.sync")}
+      aria-label={t("sidebar.sync")}
+      disabled={!appState.settings.syncVerified || !appState.syncStatus.configured || appState.syncStatus.syncing}
+      onclick={() => void appState.syncNow()}
+    >
+      <RasterIcon name="sync" size={16} />
+      <span>{t("sidebar.sync")}</span>
+    </button>
   </div>
   {/if}
 </aside>
 
 <style>
   .sidebar {
-    width: 260px;
+    position: relative;
+    width: 240px;
     flex-shrink: 0;
     background: var(--sidebar-bg);
     border-right: 1px solid var(--border);
@@ -167,6 +195,7 @@
   }
   .sidebar.collapsed {
     width: 32px;
+    cursor: pointer;
   }
   .collapse-rail-btn,
   .collapse-btn {
@@ -177,16 +206,25 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    pointer-events: auto;
+    -webkit-app-region: no-drag !important;
   }
   .collapse-rail-btn {
-    width: 31px;
-    height: 40px;
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    inset: 0;
+    border-radius: 0;
   }
   .collapse-btn {
-    width: 24px;
-    height: 24px;
+    width: 26px;
+    height: 26px;
     border-radius: 4px;
     -webkit-app-region: no-drag;
+    position: absolute;
+    top: 4px;
+    left: 3px;
+    z-index: 20;
   }
   .collapse-rail-btn:hover,
   .collapse-btn:hover { background: var(--hover-bg); color: var(--text-primary); }
@@ -194,7 +232,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    height: 40px;
+    height: 34px;
     padding: 0 8px 0 14px;
     flex-shrink: 0;
     -webkit-app-region: drag;
@@ -204,6 +242,7 @@
     font-size: 13.5px;
     color: var(--text-primary);
     letter-spacing: 0.2px;
+    margin-left: 28px;
   }
   .header-actions {
     display: flex;
@@ -214,8 +253,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 24px;
-    height: 24px;
+    width: 26px;
+    height: 26px;
     border: none;
     background: transparent;
     color: var(--text-secondary);
@@ -301,36 +340,24 @@
     color: var(--text-secondary);
     flex-shrink: 0;
   }
+  .row-icon.folder-icon {
+    width: 18px;
+    height: 18px;
+    justify-content: center;
+    border-radius: 4px;
+    color: #b7791f;
+    background: rgba(217, 155, 40, 0.14);
+  }
   .root-label {
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .root-change-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    flex-shrink: 0;
-    border: none;
-    background: transparent;
-    color: var(--text-secondary);
-    border-radius: 4px;
-    cursor: pointer;
-    opacity: 0;
-  }
-  .root-row:hover .root-change-btn {
-    opacity: 1;
-  }
-  .root-change-btn:hover {
-    background: var(--hover-bg-strong);
-    color: var(--text-primary);
-  }
   .sidebar-footer {
+    height: 34px;
     flex-shrink: 0;
-    padding: 6px 8px;
+    padding: 2px 4px;
     border-top: 1px solid var(--border);
     display: flex;
     gap: 4px;
@@ -346,8 +373,9 @@
     background: transparent;
     color: var(--text-secondary);
     border-radius: 5px;
-    padding: 7px 8px;
-    font-size: 13px;
+    height: 26px;
+    padding: 0 6px;
+    font-size: 12px;
     cursor: pointer;
   }
   .footer-btn:hover {

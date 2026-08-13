@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Icon from "./Icon.svelte";
+  import RasterIcon from "./RasterIcon.svelte";
   import { appState } from "$lib/appState.svelte";
   import { editorBridge } from "$lib/editor/bridge.svelte";
   import { t } from "$lib/i18n.svelte";
@@ -13,20 +13,27 @@
   function printDoc() {
     window.print();
   }
+  function toggleFindReplace(focusReplacement: boolean) {
+    if (appState.findReplaceOpen) {
+      appState.findReplaceOpen = false;
+      return;
+    }
+    appState.openFindReplace(focusReplacement);
+  }
   let buttons = $derived([
     { name: "open", title: t("toolbar.open"), action: () => appState.openViaDialog(), disabled: () => false },
     { name: "new", title: t("toolbar.new"), action: () => appState.newTab(), disabled: () => false },
     { name: "save", title: t("toolbar.save"), action: () => appState.saveActiveTab(), disabled: () => false },
-    { name: "save-as", title: t("toolbar.saveAs"), action: () => appState.saveActiveTabAs(), disabled: () => false },
+    { name: "saveas", title: t("toolbar.saveAs"), action: () => appState.saveActiveTabAs(), disabled: () => false },
     {
-      name: "export",
+      name: "pdf",
       title: t("toolbar.export"),
       action: () => appState.exportActiveTabAsPdf(),
       disabled: () => false,
     },
     { name: "print", title: t("toolbar.print"), action: printDoc, disabled: () => false },
-    { name: "search", title: t("toolbar.find"), action: () => appState.openFindReplace(false), disabled: () => false },
-    { name: "replace", title: t("toolbar.replace"), action: () => appState.openFindReplace(true), disabled: () => false },
+    { name: "find", title: t("toolbar.find"), action: () => toggleFindReplace(false), disabled: () => false },
+    { name: "replace", title: t("toolbar.replace"), action: () => toggleFindReplace(true), disabled: () => false },
     { name: "undo", title: t("toolbar.undo"), action: undo, disabled: () => !editorBridge.canUndo },
     { name: "redo", title: t("toolbar.redo"), action: redo, disabled: () => !editorBridge.canRedo },
   ]);
@@ -41,7 +48,7 @@
       disabled={btn.disabled()}
       onclick={btn.action}
     >
-      <Icon name={btn.name} size={17} />
+      <RasterIcon name={btn.name} size={18} />
     </button>
   {/each}
 </div>
@@ -51,7 +58,7 @@
     display: flex;
     align-items: center;
     gap: 2px;
-    height: 40px;
+    height: 34px;
     padding: 0 10px;
     border-bottom: 1px solid var(--border);
     background: var(--content-bg);
@@ -63,8 +70,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
     border: none;
     background: transparent;
     color: var(--text-secondary);

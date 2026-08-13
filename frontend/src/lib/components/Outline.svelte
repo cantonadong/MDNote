@@ -3,6 +3,7 @@
   import { editorBridge } from "$lib/editor/bridge.svelte";
   import { numberOutline } from "$lib/editor/outline";
   import { t } from "$lib/i18n.svelte";
+  import RasterIcon from "./RasterIcon.svelte";
 
   function jump(pos: number) {
     editorBridge.scrollToPos?.(pos);
@@ -13,17 +14,29 @@
   );
   let emptyHeading = $derived(t("outline.emptyHeading"));
   let collapsed = $state(false);
+
+  function closeOutline(e: MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    collapsed = true;
+  }
+
+  function openOutline(e: MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    collapsed = false;
+  }
 </script>
 
 <aside class="outline" class:collapsed>
   {#if collapsed}
-    <button class="rail-btn" title={t("outline.title")} aria-label={t("outline.title")} onclick={() => (collapsed = false)}>
-      <span>≡</span>
+    <button type="button" class="rail-btn" title={t("outline.title")} aria-label={t("outline.title")} onclick={openOutline}>
+      <RasterIcon name="left" size={16} />
     </button>
   {:else}
   <div class="outline-title">
     <span>{t("outline.title")}</span>
-    <button title="折叠大纲" aria-label="折叠大纲" onclick={() => (collapsed = true)}>›</button>
+    <button type="button" title="折叠大纲" aria-label="折叠大纲" onclick={closeOutline}><RasterIcon name="right" size={16} /></button>
   </div>
   {#if appState.outlineItems.length === 0}
     <div class="empty">{t("outline.empty")}</div>
@@ -47,22 +60,26 @@
 
 <style>
   .outline {
-    width: 220px;
+    position: relative;
+    width: 240px;
     flex-shrink: 0;
     border-left: 1px solid var(--border);
     background: var(--sidebar-bg);
     overflow-y: auto;
-    padding: 12px 8px;
+    padding: 0 8px 12px;
   }
-  .outline.collapsed { width: 32px; padding: 0; overflow: hidden; }
+  .outline.collapsed { width:32px; padding:0; overflow:hidden; cursor:pointer; }
   .rail-btn,
   .outline-title button {
     border: 0;
     background: transparent;
     color: var(--text-secondary);
     cursor: pointer;
+    pointer-events: auto;
+    -webkit-app-region: no-drag !important;
+    z-index: 20;
   }
-  .rail-btn { width: 31px; height: 40px; font-size: 18px; }
+  .rail-btn { position:absolute; inset:0; width:100%; height:100%; border-radius:0; display:flex; align-items:center; justify-content:center; }
   .rail-btn:hover,
   .outline-title button:hover { background: var(--hover-bg); color: var(--text-primary); }
   .outline-title {
@@ -74,9 +91,10 @@
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.4px;
-    padding: 0 6px 8px;
+    height: 34px;
+    padding: 0 32px 0 6px;
   }
-  .outline-title button { width: 24px; height: 24px; border-radius: 4px; font-size: 18px; }
+  .outline-title button { position:absolute; top:4px; right:3px; width:26px; height:26px; border-radius:5px; display:flex; align-items:center; justify-content:center; }
   .empty {
     font-size: 12.5px;
     color: var(--text-secondary);
