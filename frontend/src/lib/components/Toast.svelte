@@ -21,14 +21,21 @@
   <div class="toast" transition:fade={{ duration: 200 }}>{appState.toast}</div>
 {/if}
 
-{#if appState.exportedPdfPath}
+{#if appState.exportingPdf || appState.exportedPdfPath}
   <div class="export-toast" transition:fade={{ duration: 200 }}>
-    <div class="export-title">{t("toast.exportPdfSuccess")}</div>
-    <div class="export-path">{appState.exportedPdfPath}</div>
-    <div class="export-actions">
-      <button onclick={openExportedPdf}>{t("toast.openFile")}</button>
-      <button onclick={() => appState.hideExportedPdf()}>{t("findreplace.close")}</button>
-    </div>
+    {#if appState.exportingPdf}
+      <div class="export-progress">
+        <span class="export-spinner" aria-hidden="true"></span>
+        <div class="export-title">{t("toast.exportPdfProcessing")}</div>
+      </div>
+    {:else}
+      <div class="export-title">{t("toast.exportPdfSuccess")}</div>
+      <div class="export-path">{appState.exportedPdfPath}</div>
+      <div class="export-actions">
+        <button onclick={openExportedPdf}>{t("toast.openFile")}</button>
+        <button onclick={() => appState.hideExportedPdf()}>{t("findreplace.close")}</button>
+      </div>
+    {/if}
   </div>
 {/if}
 
@@ -76,6 +83,21 @@
     font-weight: 600;
     margin-bottom: 4px;
   }
+  .export-progress {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .export-progress .export-title { margin: 0; }
+  .export-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: export-spin 0.8s linear infinite;
+  }
+  @keyframes export-spin { to { transform: rotate(360deg); } }
   .export-path {
     color: var(--text-secondary);
     overflow: hidden;

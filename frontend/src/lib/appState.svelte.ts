@@ -128,6 +128,7 @@ class AppState {
   pendingDelete = $state<PendingDelete | null>(null);
   toast = $state<string | null>(null);
   exportedPdfPath = $state<string | null>(null);
+  exportingPdf = $state(false);
   findReplaceOpen = $state(false);
   // Which field FindReplace.svelte should focus, and a nonce that bumps on
   // every openFindReplace() call so the $effect there refires even when the
@@ -450,17 +451,29 @@ class AppState {
   // which still uses window.print() so the user can pick their own printer.
   async exportActiveTabAsPdf() {
     const tab = this.activeTab;
-    if (!tab) return;
+    if (!tab || this.exportingPdf) return;
     try {
       const path = await api.savePdfDialog(`${stripMdExt(tab.title)}.pdf`, this.targetDirForNewEntry());
       if (!path) return;
-      const pdfName = await api.basename(path);
-      const html = buildExportHtml(pdfName);
+      this.exportedPdfPath = null;
+      this.exportingPdf = true;
+      const exportedAt = new Intl.DateTimeFormat(i18n.locale === "zh" ? "zh-CN" : "en-NZ", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(new Date());
+      const html = buildExportHtml(stripMdExt(tab.title), exportedAt);
       if (!html) return;
       await api.exportPdf(html, path);
       this.exportedPdfPath = path;
     } catch (e) {
       this.showToast(`${t("toast.exportPdfFailed")}: ${e}`);
+    } finally {
+      this.exportingPdf = false;
     }
   }
 

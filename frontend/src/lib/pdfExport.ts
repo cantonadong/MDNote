@@ -5,7 +5,7 @@ import { editorBridge } from "./editor/bridge.svelte";
 // pdfexport.go). Pulls every live stylesheet's actual cssText rather than
 // duplicating the editor's CSS here, so the export can never drift out of
 // sync with Editor.svelte's own styling.
-export function buildExportHtml(title: string): string | null {
+export function buildExportHtml(title: string, exportedAt: string): string | null {
   const editor = editorBridge.instance;
   if (!editor) return null;
   // .editor-content-col is tiptap's own mount element (the parent Editor.svelte
@@ -27,6 +27,9 @@ export function buildExportHtml(title: string): string | null {
     })
     .join("\n");
 
+  const pageTitle = JSON.stringify(title);
+  const pageTimestamp = JSON.stringify(exportedAt);
+
   return `<!doctype html>
 <html>
 <head>
@@ -34,8 +37,26 @@ export function buildExportHtml(title: string): string | null {
 <title>${escapeHtml(title)}</title>
 <style>
 ${css}
+@page {
+  margin: 18mm 12mm 16mm;
+  @top-center {
+    content: ${pageTitle};
+    color: #777;
+    font: 10px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  @bottom-left {
+    content: ${pageTimestamp};
+    color: #777;
+    font: 10px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  @bottom-center {
+    content: counter(page) "/" counter(pages);
+    color: #777;
+    font: 10px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+}
 html, body { margin: 0; }
-.pdf-export-page { max-width: 800px; margin: 0 auto; padding: 12px 0; }
+.pdf-export-page { max-width: 800px; margin: 0 auto; padding: 0; }
 </style>
 </head>
 <body>
