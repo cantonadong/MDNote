@@ -144,6 +144,7 @@ class AppState {
   draggingPath = $state<string | null>(null);
   dragGhost = $state<DragGhost | null>(null);
   pendingExpandPath = $state<string | null>(null);
+  private openTabsSaveQueue: Promise<void> = Promise.resolve();
 
   get activeTab(): Tab | null {
     return this.tabs.find((t) => t.id === this.activeTabId) ?? null;
@@ -179,7 +180,10 @@ class AppState {
     // for something the user didn't just do themselves.
     for (const p of this.settings.openTabPaths ?? []) {
       if (!(await api.fileExists(p))) continue;
-      await this.openPath(p, { silent: true });
+      // Do not overwrite the saved foreground tab while the session is only
+      // partially restored. Persist the complete, correctly-focused session
+      // once all paths have been reopened below.
+      await this.openPath(p, { silent: true, persist: false });
     }
 
     if (initialFile) {
@@ -192,6 +196,7 @@ class AppState {
     }
 
     if (this.tabs.length === 0) this.newTab();
+    else this.persistOpenTabs();
 
     // While this instance keeps running, later double-clicked .md files get
     // forwarded here (see singleinstance.go) instead of opening a second window.
@@ -313,7 +318,12 @@ class AppState {
   // are simply left out — there's nothing on disk to reopen them from.
   persistOpenTabs() {
     const paths = this.tabs.map((t) => t.path).filter((p): p is string => !!p);
-    void api.saveOpenTabs(paths, this.activeTab?.path ?? "");
+    const activePath = this.activeTab?.path ?? "";
+    // Wails calls are asynchronous. Serialize snapshots so an older save can
+    // never finish after a newer reorder/activation and overwrite it on disk.
+    this.openTabsSaveQueue = this.openTabsSaveQueue
+      .catch(() => {})
+      .then(() => api.saveOpenTabs(paths, activePath));
   }
 
   // silent: used when restoring last session's tabs on startup — a file
@@ -326,11 +336,11 @@ class AppState {
   // — used for the drag-and-drop-from-Explorer path, where "open this next
   // to what I'm looking at" is the more deliberate, expected placement than
   // wherever the tab strip happens to end.
-  async openPath(path: string, opts: { silent?: boolean; insertAfterActive?: boolean } = {}) {
+  async openPath(path: string, opts: { silent?: boolean; insertAfterActive?: boolean; persist?: boolean } = {}) {
     const existing = this.findTabByPath(path);
     if (existing) {
       this.activeTabId = existing.id;
-      this.persistOpenTabs();
+      if (opts.persist !== false) this.persistOpenTabs();
       return;
     }
     const staleTabId = this.isPristineTab(this.activeTab) ? this.activeTab!.id : null;
@@ -353,7 +363,7 @@ class AppState {
       }
       this.activeTabId = tab.id;
       if (staleTabId) this.closeTabImmediately(staleTabId);
-      this.persistOpenTabs();
+      if (opts.persist !== false) this.persistOpenTabs();
     } catch (e) {
       if (!opts.silent) this.showToast(`${t("toast.openFailed")}: ${e}`);
     }
@@ -506,6 +516,7 @@ class AppState {
     // (after it, not before) instead of where the indicator pointed.
     const insertIdx = fromIdx < toIdx ? toIdx - 1 : toIdx;
     this.tabs.splice(insertIdx, 0, moved);
+    this.persistOpenTabs();
   }
 
   // Dropping past the last tab (empty space to the right of it, with no
@@ -516,6 +527,7 @@ class AppState {
     if (fromIdx === -1 || fromIdx === this.tabs.length - 1) return;
     const [moved] = this.tabs.splice(fromIdx, 1);
     this.tabs.push(moved);
+    this.persistOpenTabs();
   }
 
   closeTabImmediately(tabId: string) {

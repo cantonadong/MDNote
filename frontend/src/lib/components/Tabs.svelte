@@ -100,8 +100,10 @@
 
   function onDropTab(e: DragEvent, tab: Tab) {
     e.preventDefault();
-    if (draggingId && draggingId !== tab.id) {
-      appState.reorderTab(draggingId, tab.id);
+    e.stopPropagation();
+    const sourceId = draggingId || e.dataTransfer?.getData("text/plain") || null;
+    if (sourceId && sourceId !== tab.id) {
+      appState.reorderTab(sourceId, tab.id);
     }
     draggingId = null;
     dragOverId = null;
@@ -128,7 +130,12 @@
 
   function onEndDrop(e: DragEvent) {
     e.preventDefault();
-    if (draggingId) appState.moveTabToEnd(draggingId);
+    e.stopPropagation();
+    // WebView2 may deliver dragend as the pointer crosses from the trailing
+    // spacer onto the adjacent new-tab button. Recover the source from the
+    // native drag payload so the visible end insertion target always commits.
+    const sourceId = draggingId || e.dataTransfer?.getData("text/plain") || null;
+    if (sourceId) appState.moveTabToEnd(sourceId);
     draggingId = null;
     dragOverId = null;
     dragOverEnd = false;
@@ -250,7 +257,14 @@
       role="presentation"
     ></div>
   </div>
-  <button class="new-tab-btn" title={t("tabs.newTab")} aria-label={t("tabs.newTab")} onclick={() => appState.newTab()}>
+  <button
+    class="new-tab-btn"
+    title={t("tabs.newTab")}
+    aria-label={t("tabs.newTab")}
+    ondragover={onEndDragOver}
+    ondrop={onEndDrop}
+    onclick={() => appState.newTab()}
+  >
     <Icon name="plus" size={15} />
   </button>
 </div>
