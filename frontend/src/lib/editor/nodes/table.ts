@@ -101,6 +101,13 @@ export const Table = BaseTable.extend({
 });
 
 type CellGesture = { anchorPos: number; pointerId: number };
+type TextGesture = {
+  anchorCellPos: number;
+  anchorCell: HTMLTableCellElement;
+  startX: number;
+  startY: number;
+  crossedCell: boolean;
+};
 
 function isContentHit(target: HTMLElement): boolean {
   // Paragraphs occupy the full inner text-line width of a cell. This makes
@@ -122,6 +129,7 @@ function cellAtPoint(view: EditorView, clientX: number, clientY: number): { elem
 
 function cellPointerSelectionPlugin(): Plugin {
   let gesture: CellGesture | null = null;
+  let textGesture: TextGesture | null = null;
   let ownerView: EditorView | null = null;
 
   const move = (event: PointerEvent) => {
@@ -143,6 +151,33 @@ function cellPointerSelectionPlugin(): Plugin {
     window.removeEventListener("pointercancel", finish, true);
   };
 
+  const moveText = (event: MouseEvent) => {
+    if (!textGesture || !ownerView || !(event.buttons & 1)) return;
+    if (!textGesture.crossedCell && Math.hypot(event.clientX - textGesture.startX, event.clientY - textGesture.startY) < 5) return;
+    // A press in editable content is first and foremost a caret/text
+    // gesture. Only promote it to rectangular cell selection after the
+    // browser has actually selected at least one character. This prevents
+    // click jitter (and ordinary caret placement) from becoming a drag.
+    const nativeSelection = window.getSelection();
+    if (!textGesture.crossedCell && (!nativeSelection || nativeSelection.isCollapsed)) return;
+    const target = cellAtPoint(ownerView, event.clientX, event.clientY);
+    if (!target) return;
+    if (!textGesture.crossedCell && target.element === textGesture.anchorCell) return;
+    const firstCross = !textGesture.crossedCell;
+    textGesture.crossedCell = true;
+    event.preventDefault();
+    const selection = CellSelection.create(ownerView.state.doc, textGesture.anchorCellPos, target.pos);
+    if (!selection.eq(ownerView.state.selection)) ownerView.dispatch(ownerView.state.tr.setSelection(selection));
+    if (firstCross) ownerView.dom.dispatchEvent(new CustomEvent("mdnote:cell-text-selection-started"));
+  };
+
+  const finishText = () => {
+    textGesture = null;
+    ownerView = null;
+    window.removeEventListener("mousemove", moveText, true);
+    window.removeEventListener("mouseup", finishText, true);
+  };
+
   return new Plugin({
     props: {
       handleDOMEvents: {
@@ -150,7 +185,23 @@ function cellPointerSelectionPlugin(): Plugin {
           if (event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey) return false;
           const target = cellAtPoint(view, event.clientX, event.clientY);
           if (!target) return false;
-          if (isContentHit(event.target as HTMLElement)) return true;
+          if (isContentHit(event.target as HTMLElement)) {
+            textGesture = {
+              anchorCellPos: target.pos,
+              anchorCell: target.element,
+              startX: event.clientX,
+              startY: event.clientY,
+              crossedCell: false,
+            };
+            ownerView = view;
+            window.addEventListener("mousemove", moveText, true);
+            window.addEventListener("mouseup", finishText, true);
+            // Claim the mousedown so prosemirror-tables cannot start its own
+            // competing cell-selection gesture. Do not preventDefault: the
+            // browser still owns precise character selection inside this
+            // cell until our pointer crosses into another cell.
+            return true;
+          }
 
           event.preventDefault();
           const pointerId = (event as PointerEvent).pointerId ?? 1;
@@ -168,10 +219,13 @@ function cellPointerSelectionPlugin(): Plugin {
       return {
         destroy() {
           gesture = null;
+          textGesture = null;
           ownerView = null;
           window.removeEventListener("pointermove", move, true);
           window.removeEventListener("pointerup", finish, true);
           window.removeEventListener("pointercancel", finish, true);
+          window.removeEventListener("mousemove", moveText, true);
+          window.removeEventListener("mouseup", finishText, true);
         },
       };
     },

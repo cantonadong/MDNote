@@ -16,6 +16,8 @@ export function DeleteEntry(arg1:string):Promise<void>;
 
 export function EnsureLinkID(arg1:string):Promise<string>;
 
+export function ExportHtml(arg1:string,arg2:string):Promise<void>;
+
 export function ExportPdf(arg1:string,arg2:string):Promise<void>;
 
 export function FileExists(arg1:string):Promise<boolean>;
@@ -55,6 +57,8 @@ export function RevealInExplorer(arg1:string):Promise<void>;
 export function SaveAppSettings(arg1:string,arg2:boolean,arg3:boolean):Promise<main.Settings>;
 
 export function SaveFileDialog(arg1:string,arg2:string):Promise<string>;
+
+export function SaveHtmlDialog(arg1:string,arg2:string):Promise<string>;
 
 export function SaveImageAs(arg1:string):Promise<string>;
 

@@ -3,7 +3,7 @@
   import { Editor } from "@tiptap/core";
   import { TextSelection } from "@tiptap/pm/state";
   import { CellSelection, TableMap, deleteCellSelection } from "@tiptap/pm/tables";
-  import { Fragment, type Node as PMNode } from "@tiptap/pm/model";
+  import { DOMParser as PMDOMParser, Fragment, type Node as PMNode } from "@tiptap/pm/model";
   import StarterKit from "@tiptap/starter-kit";
   import { Markdown } from "tiptap-markdown";
   import { Placeholder } from "@tiptap/extensions";
@@ -31,6 +31,7 @@
   } from "$lib/editor/grammar/spellCheck";
   import { WavyUnderline, DotUnderline } from "$lib/editor/nodes/wavyUnderline";
   import { TextColor, UnderlineColor } from "$lib/editor/nodes/inlineColor";
+  import { Mention } from "$lib/editor/nodes/mention";
   import { JoinAdjacentLists } from "$lib/editor/nodes/joinAdjacentLists";
   import { EmptyListItemDelete } from "$lib/editor/nodes/emptyListItemDelete";
   import { ToggleList, ToggleSummary } from "$lib/editor/nodes/toggleList";
@@ -234,6 +235,7 @@
   let imageMenu = $state<{ pos: number; x: number; y: number; centered: boolean; widthPercent: number; src: string } | null>(null);
   let tableCellSelectionRect = $state<{ left: number; top: number; width: number; height: number } | null>(null);
   let tableSelectionToolbarVisible = $state(false);
+  let cellTextEditingToolbar = $state(false);
   let tableSelectionToolbarPinned = false;
   let tableSelectionToolbarHideTimer: ReturnType<typeof setTimeout> | null = null;
   let imageResizeActive = $state(false);
@@ -720,6 +722,7 @@
     if (!editor || !wrapperEl || !(editor.state.selection instanceof CellSelection)) {
       tableCellSelectionRect = null;
       tableSelectionToolbarVisible = false;
+      cellTextEditingToolbar = false;
       return;
     }
     requestAnimationFrame(() => {
@@ -746,6 +749,14 @@
         width: right - left,
         height: bottom - top,
       };
+      // A text drag that crosses into a second cell becomes a CellSelection.
+      // Put the regular text-formatting toolbar above the rectangle's center.
+      if (cellTextEditingToolbar) {
+        selectionToolbar = {
+          top: top - wrapper.top,
+          left: (left + right) / 2 - wrapper.left,
+        };
+      }
     });
   }
 
@@ -765,6 +776,8 @@
   }
 
   function onTableCellSelectionFinished() {
+    cellTextEditingToolbar = false;
+    selectionToolbar = null;
     syncTableCellSelectionRect();
     tableSelectionToolbarPinned = true;
     showTableSelectionToolbar();
@@ -1731,6 +1744,52 @@
   }
 
   function onEditorPaste(e: ClipboardEvent) {
+    const clipboardText = e.clipboardData?.getData("text/plain") ?? "";
+    const notionCallout = clipboardText.match(/^\s*<aside(?:\s[^>]*)?>\s*([\s\S]*?)\s*<\/aside>\s*$/i);
+    if (notionCallout && editor) {
+      const calloutMarkdown = notionCallout[1].replace(/^\s*💡\s*/, "");
+      const calloutHTML = (editor.storage as any).markdown.parser.parse(calloutMarkdown);
+      const container = document.createElement("div");
+      container.innerHTML = calloutHTML;
+      const content = PMDOMParser.fromSchema(editor.schema).parse(container).content;
+      const callout = editor.schema.nodes.callout.createAndFill(null, content);
+      e.preventDefault();
+      if (callout) {
+        editor.view.dispatch(editor.state.tr.replaceSelectionWith(callout).scrollIntoView());
+      }
+      return;
+    }
+    const mdnoteTable = e.clipboardData?.getData("application/x-mdnote-table") ?? "";
+    if (mdnoteTable && editor) {
+      e.preventDefault();
+      editor.view.pasteHTML(mdnoteTable, e);
+      return;
+    }
+    // Excel exposes a copied range as both an HTML table and an image file
+    // (the latter is only a visual preview of the same cells). Prefer the
+    // structured representation so the preview is not inserted after the
+    // table as an extra image.
+    const html = e.clipboardData?.getData("text/html") ?? "";
+    if (/<table(?:\s|>)/i.test(html)) return;
+    const plainText = e.clipboardData?.getData("text/plain") ?? "";
+    if (plainText.includes("\t") && editor) {
+      const table = document.createElement("table");
+      const tbody = document.createElement("tbody");
+      for (const [rowIndex, line] of plainText.replace(/\r\n?/g, "\n").split("\n").entries()) {
+        if (rowIndex === plainText.split(/\r\n?|\n/).length - 1 && line === "") continue;
+        const tr = document.createElement("tr");
+        for (const value of line.split("\t")) {
+          const cell = document.createElement(rowIndex === 0 ? "th" : "td");
+          cell.textContent = value;
+          tr.append(cell);
+        }
+        tbody.append(tr);
+      }
+      table.append(tbody);
+      e.preventDefault();
+      editor.view.pasteHTML(table.outerHTML, e);
+      return;
+    }
     const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
     if (files.length > 0) {
       e.preventDefault();
@@ -1832,6 +1891,25 @@
     }
     editor.view.dispatch(editor.state.tr.setNodeAttribute(imageMenu.pos, "widthPercent", 100));
     imageMenu = { ...imageMenu, widthPercent: 100 };
+  }
+
+  function onTableCellTextSelectionStarted() {
+    cellTextEditingToolbar = true;
+    tableSelectionToolbarVisible = false;
+    syncTableCellSelectionRect();
+  }
+
+  function deleteImage(e: MouseEvent) {
+    e.stopPropagation();
+    if (!editor || !imageMenu) return;
+    const node = editor.state.doc.nodeAt(imageMenu.pos);
+    if (!node || node.type.name !== "mdImage") {
+      imageMenu = null;
+      return;
+    }
+    const from = imageMenu.pos;
+    editor.view.dispatch(editor.state.tr.delete(from, from + node.nodeSize));
+    imageMenu = null;
   }
 
   async function saveImageAs(e: MouseEvent) {
@@ -2231,7 +2309,7 @@
   // <input type="color"> dialog, which can steal focus for a while) re-
   // selects this exact range first rather than trusting whatever the
   // "current" selection happens to be by then.
-  let pendingHighlightRange: { from: number; to: number } | null = null;
+  let pendingHighlightRange: { ranges: { from: number; to: number }[] } | null = null;
 
   function updateSelectionToolbar() {
     if (!editor || !wrapperEl) {
@@ -2239,6 +2317,9 @@
       return;
     }
     const { selection } = editor.state;
+    // CellSelection positioning is derived from the selected cell DOM rects
+    // in syncTableCellSelectionRect(), after ProseMirror has painted them.
+    if (selection instanceof CellSelection) return;
     if (!editor.isFocused || selection.empty || !(selection instanceof TextSelection)) {
       selectionToolbar = null;
       return;
@@ -2266,8 +2347,9 @@
   function openHighlightPicker(e: MouseEvent, kind: "highlight" | "text" | "underline" = "highlight") {
     if (!editor) return;
     e.stopPropagation();
-    const { from, to } = editor.state.selection;
-    pendingHighlightRange = { from, to };
+    pendingHighlightRange = {
+      ranges: editor.state.selection.ranges.map((range) => ({ from: range.$from.pos, to: range.$to.pos })),
+    };
     highlightPickerKind = kind;
     if (kind === "highlight") {
       highlightCurrentColor = editor.isActive("highlight") ? ((editor.getAttributes("highlight").color as string) ?? null) : null;
@@ -2281,40 +2363,58 @@
     highlightPickerOpen = true;
   }
 
-  function rangeHasMark(markName: string, from: number, to: number) {
+  function rangesHaveMark(markName: string, ranges: { from: number; to: number }[]) {
     if (!editor) return false;
     const markType = editor.state.schema.marks[markName];
     if (!markType) return false;
     let found = false;
-    editor.state.doc.nodesBetween(from, to, (node) => {
-      if (found) return false;
-      if (node.isText && markType.isInSet(node.marks)) found = true;
-    });
+    for (const { from, to } of ranges) {
+      editor.state.doc.nodesBetween(from, to, (node) => {
+        if (found) return false;
+        if (node.isText && markType.isInSet(node.marks)) found = true;
+      });
+      if (found) break;
+    }
     return found;
   }
 
   function applyHighlightColor(color: string | null) {
     highlightPickerOpen = false;
     if (!editor || !pendingHighlightRange) return;
-    const { from, to } = pendingHighlightRange;
-    const hasUnderline = rangeHasMark("underline", from, to);
-    const hasWavyUnderline = rangeHasMark("wavyUnderline", from, to);
-    const hasDotUnderline = rangeHasMark("dotUnderline", from, to);
-    const chain = editor.chain().focus().setTextSelection({ from, to });
+    const { ranges } = pendingHighlightRange;
+    const hasUnderline = rangesHaveMark("underline", ranges);
+    const hasWavyUnderline = rangesHaveMark("wavyUnderline", ranges);
+    const hasDotUnderline = rangesHaveMark("dotUnderline", ranges);
+    // Do not recreate this as a TextSelection. For a range spanning table
+    // cells, `from`/`to` can sit on cell boundaries; coercing those boundary
+    // positions into a TextSelection makes tableEditing repair the grid and
+    // can materialize an extra leading column in a separate, non-obvious
+    // transaction. Marks can be applied directly across the document range
+    // without changing either the selection or the table structure.
+    const tr = editor.state.tr;
+    const applyMark = (name: string, attrs?: Record<string, unknown>) => {
+      const type = editor!.state.schema.marks[name];
+      if (type) for (const { from, to } of ranges) tr.addMark(from, to, type.create(attrs));
+    };
+    const removeMark = (name: string) => {
+      const type = editor!.state.schema.marks[name];
+      if (type) for (const { from, to } of ranges) tr.removeMark(from, to, type);
+    };
     if (highlightPickerKind === "highlight") {
-      if (color) chain.setHighlight({ color }).run();
-      else chain.unsetHighlight().run();
+      if (color) applyMark("highlight", { color });
+      else removeMark("highlight");
     } else if (highlightPickerKind === "text") {
-      if (color) chain.setMark("textColor", { color }).run();
-      else chain.unsetMark("textColor").run();
+      if (color) applyMark("textColor", { color });
+      else removeMark("textColor");
     } else {
       if (color) {
-        chain.setMark("underlineColor", { color });
-        if (!hasUnderline && !hasWavyUnderline && !hasDotUnderline) chain.setMark("wavyUnderline");
-        chain.run();
+        applyMark("underlineColor", { color });
+        if (!hasUnderline && !hasWavyUnderline && !hasDotUnderline) applyMark("wavyUnderline");
       }
-      else chain.unsetMark("underlineColor").run();
+      else removeMark("underlineColor");
     }
+    if (tr.docChanged) editor.view.dispatch(tr.scrollIntoView());
+    editor.commands.focus();
     pendingHighlightRange = null;
   }
 
@@ -2397,27 +2497,121 @@
     deleteCellSelection(editor.state, editor.view.dispatch);
   }
 
+  function selectedTableClipboard(): { text: string; html: string } | null {
+    if (!editor || !(editor.state.selection instanceof CellSelection)) return null;
+    // Explicitly provide both clipboard representations. ProseMirror's
+    // generic CellSelection text serializer can flatten complex cell
+    // content without row/column separators; TSV keeps the same structure
+    // users get when copying a range from Excel into a plain-text field.
+    const selected = Array.from(editor.view.dom.querySelectorAll<HTMLElement>("td.selectedCell, th.selectedCell"));
+    const rows = selected.reduce((result, cell) => {
+      const sourceRow = cell.closest("tr") as HTMLTableRowElement | null;
+      if (!sourceRow) return result;
+      const last = result.at(-1);
+      if (!last || last.source !== sourceRow) result.push({ source: sourceRow, cells: [] });
+      result.at(-1)!.cells.push(cell);
+      return result;
+    }, [] as { source: HTMLTableRowElement; cells: HTMLElement[] }[]);
+    const cleanText = (cell: HTMLElement) => (cell.innerText || cell.textContent || "")
+      .replace(/\r?\n|\t/g, " ")
+      .trim();
+    const text = rows.map((row) => row.cells.map(cleanText).join("\t")).join("\r\n");
+    const table = document.createElement("table");
+    const tbody = document.createElement("tbody");
+    for (const row of rows) {
+      const tr = document.createElement("tr");
+      for (const cell of row.cells) {
+        const cleanCell = document.createElement(cell.tagName.toLowerCase());
+        for (const attr of ["rowspan", "colspan"]) {
+          const value = cell.getAttribute(attr);
+          if (value) cleanCell.setAttribute(attr, value);
+        }
+        cleanCell.textContent = cleanText(cell);
+        tr.append(cleanCell);
+      }
+      tbody.append(tr);
+    }
+    table.append(tbody);
+    return { text, html: excelClipboardHTML(table) };
+  }
+
+  // Spreadsheet-aware editors distinguish an Excel range from an ordinary
+  // web table using these Office markers. Without them ChatGPT renders the
+  // HTML table directly and squeezes every column to the composer width;
+  // with them it follows its spreadsheet/TSV paste path, like real Excel.
+  function excelClipboardHTML(table: HTMLTableElement): string {
+    table.setAttribute("border", "0");
+    table.setAttribute("cellpadding", "0");
+    table.setAttribute("cellspacing", "0");
+    return `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><meta name="ProgId" content="Excel.Sheet"><style>td,th{white-space:nowrap}</style></head><body><!--StartFragment-->${table.outerHTML}<!--EndFragment--></body></html>`;
+  }
+
+  function wholeTableClipboard(): { text: string; html: string } | null {
+    if (!editor) return null;
+    const { from, to } = editor.state.selection;
+    let tablePos: number | null = null;
+    editor.state.doc.descendants((node, pos) => {
+      if (tablePos === null && node.type.name === "table" && from <= pos && to >= pos + node.nodeSize) {
+        tablePos = pos;
+        return false;
+      }
+      return tablePos === null;
+    });
+    if (tablePos === null) return null;
+    const nodeDom = editor.view.nodeDOM(tablePos) as HTMLElement | null;
+    const sourceTable = nodeDom?.matches("table")
+      ? (nodeDom as HTMLTableElement)
+      : nodeDom?.querySelector<HTMLTableElement>("table") ?? null;
+    if (!sourceTable) return null;
+    const text = Array.from(sourceTable.rows)
+      .map((row) => Array.from(row.cells)
+        .map((cell) => (cell.innerText || cell.textContent || "").replace(/\r?\n|\t/g, " ").trim())
+        .join("\t"))
+      .join("\r\n");
+    // Keep the HTML deliberately as flat as Excel's clipboard table. Rich
+    // editors such as ChatGPT prefer text/html over text/plain; leaving
+    // ProseMirror's <p> wrappers inside cells makes those editors interpret
+    // every cell as an unrelated paragraph instead of a table row.
+    const cleanTable = document.createElement("table");
+    const tbody = document.createElement("tbody");
+    for (const sourceRow of Array.from(sourceTable.rows)) {
+      const tr = document.createElement("tr");
+      for (const sourceCell of Array.from(sourceRow.cells)) {
+        const cell = document.createElement(sourceCell.tagName.toLowerCase());
+        for (const attr of ["rowspan", "colspan"]) {
+          const value = sourceCell.getAttribute(attr);
+          if (value) cell.setAttribute(attr, value);
+        }
+        cell.textContent = (sourceCell.innerText || sourceCell.textContent || "").replace(/\r?\n|\t/g, " ").trim();
+        tr.append(cell);
+      }
+      tbody.append(tr);
+    }
+    cleanTable.append(tbody);
+    return { text, html: excelClipboardHTML(cleanTable) };
+  }
+
+  function onEditorCopy(event: ClipboardEvent) {
+    // Cell selections and the whole-table block menu take different
+    // ProseMirror selection paths. Cover both so Ctrl+C and both menu copy
+    // buttons always expose an Excel-compatible TSV plain-text flavor.
+    const data = selectedTableClipboard() ?? wholeTableClipboard();
+    if (!data || !event.clipboardData) return;
+    event.preventDefault();
+    event.clipboardData.setData("text/plain", data.text);
+    // External rich-text inputs (notably ChatGPT) prefer text/html and then
+    // squeeze the table into their composer. Expose TSV to other apps, while
+    // retaining rich table data in an MDNote-only clipboard flavor.
+    event.clipboardData.setData("application/x-mdnote-table", data.html);
+  }
+
   async function copySelectedTableCells() {
     if (!editor || !(editor.state.selection instanceof CellSelection)) return;
-    // Let ProseMirror serialize the CellSelection itself. It puts both a
-    // real HTML table and tab/newline plain text on the clipboard. The
-    // table plugin consequently pastes a table outside tables, and inside
-    // another table uses its rectangular-cell paste path (which grows the
-    // destination table when the rectangle does not fit).
     editor.view.focus();
-    if (!document.execCommand("copy")) {
-      const text = Array.from(editor.view.dom.querySelectorAll<HTMLElement>("td.selectedCell, th.selectedCell"))
-        .reduce((rows, cell) => {
-          const row = cell.closest("tr") as HTMLTableRowElement | null;
-          if (!row) return rows;
-          const last = rows.at(-1);
-          if (!last || last.el !== row) rows.push({ el: row, values: [] });
-          rows.at(-1)!.values.push((cell.innerText || cell.textContent || "").trim());
-          return rows;
-        }, [] as { el: HTMLTableRowElement; values: string[] }[])
-        .map((row) => row.values.join("\t"))
-        .join("\n");
-      await navigator.clipboard.writeText(text);
+    const copied = document.execCommand("copy");
+    if (!copied) {
+      const data = selectedTableClipboard();
+      if (data) await navigator.clipboard.writeText(data.text);
     }
   }
 
@@ -3604,6 +3798,7 @@
         DotUnderline,
         TextColor,
         UnderlineColor,
+        Mention,
         JoinAdjacentLists,
         EmptyListItemDelete,
         TaskList,
@@ -3680,6 +3875,7 @@
     });
     editorBridge.instance = editor;
     editor.view.dom.addEventListener("mdnote:cell-selection-finished", onTableCellSelectionFinished);
+    editor.view.dom.addEventListener("mdnote:cell-text-selection-started", onTableCellTextSelectionStarted);
     editorBridge.scrollToPos = scrollToPos;
     editorBridge.scrollToRange = scrollToRange;
     editorBridge.resetZoom = resetZoom;
@@ -3702,6 +3898,7 @@
     window.removeEventListener("resize", queueTableWrapperSync);
     window.removeEventListener("mousemove", onWindowTableSelectionMouseMove, true);
     editor?.view.dom.removeEventListener("mdnote:cell-selection-finished", onTableCellSelectionFinished);
+    editor?.view.dom.removeEventListener("mdnote:cell-text-selection-started", onTableCellTextSelectionStarted);
     slashMenuState.onSelect = null;
     slashMenuState.close();
     editor?.destroy();
@@ -3774,7 +3971,8 @@
     ondblclick={onWrapperDblClick}
     onpointerdown={onWrapperPointerDown}
     onmousedown={onWrapperMouseDown}
-    onpaste={onEditorPaste}
+    onpastecapture={onEditorPaste}
+    oncopycapture={onEditorCopy}
     ondragover={(e) => {
       if (Array.from(e.dataTransfer?.items ?? []).some((item) => item.kind === "file" && item.type.startsWith("image/"))) e.preventDefault();
     }}
@@ -3876,6 +4074,7 @@
         <button class="image-reset-btn" onmousedown={preventBlur} onclick={resetImageSize}>{t("image.resetSize")}</button>
         <button class="image-reset-btn" onmousedown={preventBlur} onclick={saveImageAs}>{t("image.saveAs")}</button>
         <button class="image-reset-btn" onmousedown={preventBlur} onclick={revealImageInExplorer}>{t("tabs.revealInExplorer")}</button>
+        <button class="image-reset-btn danger" onmousedown={preventBlur} onclick={deleteImage}>{t("image.delete")}</button>
       </div>
     {/if}
     {#if tableCellSelectionRect}
@@ -4680,19 +4879,36 @@
   .editor-content-col :global(.tiptap .hljs-operator),
   .editor-content-col :global(.tiptap .hljs-punctuation) { color: #e67700; }
   .editor-content-col :global(.tiptap code) {
-    background: var(--code-bg);
-    border-radius: 3px;
-    /* Kept small on purpose: double-clicking a word inside this pill
-       selects its whole text content, and the browser paints the
-       selection highlight across this padding too — wider padding here
-       reads as "extra unrelated content got selected" even though the
-       actual selected text is exactly the word. */
-    padding: 0.1em 0.15em;
-    font-family: "Cascadia Code", "Consolas", "Microsoft YaHei UI", "PingFang SC", ui-monospace, monospace;
-    font-size: 0.9em;
+    color: inherit;
+    background: #FFF3C4;
+    border: none;
+    border-radius: 6px;
+    box-shadow: none;
+    padding: 3px 6px;
+    font: inherit;
+    font-size: inherit;
   }
   .editor-content-col :global(.tiptap pre code) {
+    color: inherit;
     background: none;
+    padding: 0;
+  }
+  .editor-content-col :global(.tiptap span[data-type="mention"]) {
+    color: #1677FF;
+    background: rgba(22, 119, 255, 0.09);
+    border: none;
+    border-radius: 6px;
+    box-shadow: none;
+    margin: 0;
+    padding: 1px 4px;
+    font: inherit;
+  }
+  .editor-content-col :global(.tiptap span[data-type="mention"].mention-editing),
+  .editor-content-col :global(.tiptap span[data-type="mention"]:has(.mention-editing)),
+  .editor-content-col :global(.tiptap .mention-editing > span[data-type="mention"]) {
+    color: inherit;
+    background: transparent;
+    border-radius: 0;
     padding: 0;
   }
   /* A bare 1px border-top with margin around it means the element's own
@@ -5091,6 +5307,10 @@
   .editor-content-col :global(.tiptap div[data-type="callout"] p + p) {
     margin-top: 0.3em;
   }
+  .editor-content-col :global(.tiptap div[data-type="callout"] > ol:first-child),
+  .editor-content-col :global(.tiptap div[data-type="callout"] > ul:first-child) {
+    margin-top: 0;
+  }
   .editor-content-col :global(.tiptap div[data-type="columns"]) {
     display: grid;
     gap: 24px;
@@ -5459,6 +5679,12 @@
   }
   .image-reset-btn:hover {
     background: var(--hover-bg);
+  }
+  .image-reset-btn.danger {
+    color: #e03e3e;
+  }
+  .image-reset-btn.danger:hover {
+    background: rgba(224, 62, 62, 0.1);
   }
   .table-header-menu {
     min-width: 200px;

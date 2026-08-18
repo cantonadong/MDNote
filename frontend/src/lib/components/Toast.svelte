@@ -5,12 +5,22 @@
   import { t } from "$lib/i18n.svelte";
   import UpdateReadyToast from "./UpdateReadyToast.svelte";
 
-  async function openExportedPdf() {
-    const path = appState.exportedPdfPath;
+  async function openExportedFile() {
+    const path = appState.exportedPath;
     if (!path) return;
     try {
       await api.openWithDefaultApp(path);
-      appState.hideExportedPdf();
+      appState.hideExportStatus();
+    } catch (e) {
+      appState.showToast(`${t("toast.openFailed")}: ${e}`);
+    }
+  }
+
+  async function revealExportedFile() {
+    const path = appState.exportedPath;
+    if (!path) return;
+    try {
+      await api.revealInExplorer(path);
     } catch (e) {
       appState.showToast(`${t("toast.openFailed")}: ${e}`);
     }
@@ -21,19 +31,21 @@
   <div class="toast" transition:fade={{ duration: 200 }}>{appState.toast}</div>
 {/if}
 
-{#if appState.exportingPdf || appState.exportedPdfPath}
+{#if appState.exportToastVisible && (appState.exporting || appState.exportedPath)}
   <div class="export-toast" transition:fade={{ duration: 200 }}>
-    {#if appState.exportingPdf}
+    <button class="export-close" title={t("findreplace.close")} aria-label={t("findreplace.close")} onclick={() => appState.hideExportStatus()}>×</button>
+    {#if appState.exporting}
       <div class="export-progress">
         <span class="export-spinner" aria-hidden="true"></span>
-        <div class="export-title">{t("toast.exportPdfProcessing")}</div>
+        <div class="export-title">{t(appState.exportFormat === "html" ? "toast.exportHtmlProcessing" : "toast.exportPdfProcessing")}</div>
       </div>
     {:else}
-      <div class="export-title">{t("toast.exportPdfSuccess")}</div>
-      <div class="export-path">{appState.exportedPdfPath}</div>
+      <div class="export-title">{t(appState.exportFormat === "html" ? "toast.exportHtmlSuccess" : "toast.exportPdfSuccess")}</div>
+      <div class="export-path" title={appState.exportedPath ?? ""}>{appState.exportedPath}</div>
       <div class="export-actions">
-        <button onclick={openExportedPdf}>{t("toast.openFile")}</button>
-        <button onclick={() => appState.hideExportedPdf()}>{t("findreplace.close")}</button>
+        <button onclick={revealExportedFile}>{t("tabs.revealInExplorer")}</button>
+        <button onclick={openExportedFile}>{t("toast.openFile")}</button>
+        <button onclick={() => appState.hideExportStatus()}>{t("findreplace.close")}</button>
       </div>
     {/if}
   </div>
@@ -79,6 +91,21 @@
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
     font-size: 13px;
   }
+  .export-close {
+    position: absolute;
+    top: 6px;
+    right: 7px;
+    width: 24px;
+    height: 24px;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+  }
+  .export-close:hover { background: var(--hover-bg); }
   .export-title {
     font-weight: 600;
     margin-bottom: 4px;

@@ -103,11 +103,11 @@ export namespace main {
 	export class UpdateStatus {
 	    ready: boolean;
 	    version: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new UpdateStatus(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ready = source["ready"];
@@ -116,3 +116,4 @@ export namespace main {
 	}
 
 }
+

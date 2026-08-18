@@ -100,16 +100,16 @@
           <RasterIcon name="left" size={16} />
         </button>
         <button title={t("sidebar.newFile")} aria-label={t("sidebar.newFile")} onclick={newFile}
-          ><RasterIcon name="new" size={17} /></button
+          ><RasterIcon name="new" size={16} /></button
         >
         <button title={t("sidebar.newFolder")} aria-label={t("sidebar.newFolder")} onclick={newFolder}
-          ><RasterIcon name="new_folder" size={17} /></button
+          ><RasterIcon name="new_folder" size={16} /></button
         >
         <button title={t("sidebar.migrate")} aria-label={t("sidebar.migrate")} onclick={migrateRootDir}
-          ><RasterIcon name="transfer" size={17} /></button
+          ><RasterIcon name="transfer" size={16} /></button
         >
         <button title={t("sidebar.refresh")} aria-label={t("sidebar.refresh")} onclick={() => appState.refreshTree()}
-          ><RasterIcon name="refresh" size={17} /></button
+          ><RasterIcon name="refresh" size={16} /></button
         >
       </div>
     {:else}

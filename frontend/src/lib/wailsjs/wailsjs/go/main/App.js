@@ -30,6 +30,10 @@ export function EnsureLinkID(arg1) {
   return window['go']['main']['App']['EnsureLinkID'](arg1);
 }
 
+export function ExportHtml(arg1, arg2) {
+  return window['go']['main']['App']['ExportHtml'](arg1, arg2);
+}
+
 export function ExportPdf(arg1, arg2) {
   return window['go']['main']['App']['ExportPdf'](arg1, arg2);
 }
@@ -108,6 +112,10 @@ export function SaveAppSettings(arg1, arg2, arg3) {
 
 export function SaveFileDialog(arg1, arg2) {
   return window['go']['main']['App']['SaveFileDialog'](arg1, arg2);
+}
+
+export function SaveHtmlDialog(arg1, arg2) {
+  return window['go']['main']['App']['SaveHtmlDialog'](arg1, arg2);
 }
 
 export function SaveImageAs(arg1) {

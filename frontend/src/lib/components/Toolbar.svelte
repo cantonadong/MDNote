@@ -2,7 +2,8 @@
   import RasterIcon from "./RasterIcon.svelte";
   import { appState } from "$lib/appState.svelte";
   import { editorBridge } from "$lib/editor/bridge.svelte";
-  import { t } from "$lib/i18n.svelte";
+  import { i18n, t } from "$lib/i18n.svelte";
+  import { buildPageChromeCss, formatPageTimestamp } from "$lib/pdfExport";
 
   function undo() {
     editorBridge.instance?.chain().focus().undo().run();
@@ -11,7 +12,19 @@
     editorBridge.instance?.chain().focus().redo().run();
   }
   function printDoc() {
-    window.print();
+    const tab = appState.activeTab;
+    if (!tab) return;
+
+    const timestamp = formatPageTimestamp(i18n.locale);
+    const style = document.createElement("style");
+    style.dataset.mdnotePrintChrome = "true";
+    style.textContent = buildPageChromeCss(tab.title.replace(/\.md$/i, ""), timestamp);
+    document.head.querySelector('style[data-mdnote-print-chrome="true"]')?.remove();
+    document.head.appendChild(style);
+
+    const cleanup = () => style.remove();
+    window.addEventListener("afterprint", cleanup, { once: true });
+    requestAnimationFrame(() => window.print());
   }
   function toggleFindReplace(focusReplacement: boolean) {
     if (appState.findReplaceOpen) {
@@ -31,6 +44,12 @@
       action: () => appState.exportActiveTabAsPdf(),
       disabled: () => false,
     },
+    {
+      name: "html",
+      title: t("toolbar.exportHtml"),
+      action: () => appState.exportActiveTabAsHtml(),
+      disabled: () => false,
+    },
     { name: "print", title: t("toolbar.print"), action: printDoc, disabled: () => false },
     { name: "find", title: t("toolbar.find"), action: () => toggleFindReplace(false), disabled: () => false },
     { name: "replace", title: t("toolbar.replace"), action: () => toggleFindReplace(true), disabled: () => false },
@@ -48,7 +67,7 @@
       disabled={btn.disabled()}
       onclick={btn.action}
     >
-      <RasterIcon name={btn.name} size={18} />
+      <RasterIcon name={btn.name} size={16} />
     </button>
   {/each}
 </div>

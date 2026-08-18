@@ -80,9 +80,12 @@ export const api = {
     goApp().SaveFileDialog(defaultName, defaultDir),
   savePdfDialog: (defaultName: string, defaultDir: string): Promise<string> =>
     goApp().SavePdfDialog(defaultName, defaultDir),
+  saveHtmlDialog: (defaultName: string, defaultDir: string): Promise<string> =>
+    goApp().SaveHtmlDialog(defaultName, defaultDir),
   // Silently renders html to a PDF at path via a throwaway hidden WebView2
   // instance on the Go side — no print preview/print dialog ever appears.
   exportPdf: (html: string, path: string): Promise<void> => goApp().ExportPdf(html, path),
+  exportHtml: (html: string, path: string): Promise<void> => goApp().ExportHtml(html, path),
   basename: (path: string): Promise<string> => goApp().Basename(path),
   fileExists: (path: string): Promise<boolean> => goApp().FileExists(path),
   openWithDefaultApp: (path: string): Promise<void> => goApp().OpenWithDefaultApp(path),

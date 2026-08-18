@@ -2,7 +2,7 @@ import { api, type Settings, type SyncStatus, type UpdateStatus } from "./api";
 import type { OutlineItem } from "./editor/outline";
 import { editorBridge } from "./editor/bridge.svelte";
 import { i18n, t, type LanguageSetting } from "./i18n.svelte";
-import { buildExportHtml } from "./pdfExport";
+import { buildExportHtml, formatPageTimestamp } from "./pdfExport";
 
 export interface Tab {
   id: string;
@@ -127,8 +127,10 @@ class AppState {
   pendingClose = $state<PendingClose | null>(null);
   pendingDelete = $state<PendingDelete | null>(null);
   toast = $state<string | null>(null);
-  exportedPdfPath = $state<string | null>(null);
-  exportingPdf = $state(false);
+  exportedPath = $state<string | null>(null);
+  exportFormat = $state<"pdf" | "html" | null>(null);
+  exporting = $state(false);
+  exportToastVisible = $state(false);
   findReplaceOpen = $state(false);
   // Which field FindReplace.svelte should focus, and a nonce that bumps on
   // every openFindReplace() call so the $effect there refires even when the
@@ -227,8 +229,8 @@ class AppState {
     }, 3000);
   }
 
-  hideExportedPdf() {
-    this.exportedPdfPath = null;
+  hideExportStatus() {
+    this.exportToastVisible = false;
   }
 
   refreshTree() {
@@ -451,29 +453,46 @@ class AppState {
   // which still uses window.print() so the user can pick their own printer.
   async exportActiveTabAsPdf() {
     const tab = this.activeTab;
-    if (!tab || this.exportingPdf) return;
+    if (!tab || this.exporting) return;
     try {
       const path = await api.savePdfDialog(`${stripMdExt(tab.title)}.pdf`, this.targetDirForNewEntry());
       if (!path) return;
-      this.exportedPdfPath = null;
-      this.exportingPdf = true;
-      const exportedAt = new Intl.DateTimeFormat(i18n.locale === "zh" ? "zh-CN" : "en-NZ", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false,
-      }).format(new Date());
+      this.exportedPath = null;
+      this.exportFormat = "pdf";
+      this.exporting = true;
+      this.exportToastVisible = true;
+      const exportedAt = formatPageTimestamp(i18n.locale);
       const html = buildExportHtml(stripMdExt(tab.title), exportedAt);
       if (!html) return;
       await api.exportPdf(html, path);
-      this.exportedPdfPath = path;
+      this.exportedPath = path;
     } catch (e) {
       this.showToast(`${t("toast.exportPdfFailed")}: ${e}`);
     } finally {
-      this.exportingPdf = false;
+      this.exporting = false;
+    }
+  }
+
+  async exportActiveTabAsHtml() {
+    const tab = this.activeTab;
+    if (!tab || this.exporting) return;
+    try {
+      this.flushActiveEditorContent();
+      const path = await api.saveHtmlDialog(`${stripMdExt(tab.title)}.html`, this.targetDirForNewEntry());
+      if (!path) return;
+      this.exportedPath = null;
+      this.exportFormat = "html";
+      this.exporting = true;
+      this.exportToastVisible = true;
+      const exportedAt = formatPageTimestamp(i18n.locale);
+      const html = buildExportHtml(stripMdExt(tab.title), exportedAt, "html");
+      if (!html) return;
+      await api.exportHtml(html, path);
+      this.exportedPath = path;
+    } catch (e) {
+      this.showToast(`${t("toast.exportHtmlFailed")}: ${e}`);
+    } finally {
+      this.exporting = false;
     }
   }
 

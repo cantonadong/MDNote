@@ -575,6 +575,29 @@ func (a *App) SavePdfDialog(defaultName string, defaultDir string) (string, erro
 	return runtime.SaveFileDialog(a.ctx, opts)
 }
 
+// SaveHtmlDialog opens a native save-path picker for the "另存为 HTML" toolbar action.
+func (a *App) SaveHtmlDialog(defaultName string, defaultDir string) (string, error) {
+	if defaultName == "" {
+		defaultName = localized("未命名.html", "Untitled.html")
+	}
+	opts := runtime.SaveDialogOptions{
+		Title:           localized("另存为 HTML", "Save as HTML"),
+		DefaultFilename: defaultName,
+		Filters: []runtime.FileFilter{
+			{DisplayName: "HTML (*.html)", Pattern: "*.html"},
+		},
+	}
+	if info, err := os.Stat(defaultDir); err == nil && info.IsDir() {
+		opts.DefaultDirectory = defaultDir
+	}
+	return runtime.SaveFileDialog(a.ctx, opts)
+}
+
+// ExportHtml writes the self-contained rendered note snapshot selected by the user.
+func (a *App) ExportHtml(html string, path string) error {
+	return os.WriteFile(path, []byte(html), 0o644)
+}
+
 // ExportPdf silently renders html (a full, self-contained HTML document
 // snapshot of the current note, built on the frontend) to a PDF at path,
 // with no print preview or print-dialog UI ever appearing.
