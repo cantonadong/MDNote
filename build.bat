@@ -8,6 +8,9 @@ set "GOCACHE=%TEMP%\MDNote-go-build"
 set "GOTELEMETRY=off"
 if not exist "%GOCACHE%" mkdir "%GOCACHE%"
 
+where go.exe >nul 2>nul
+if errorlevel 1 if exist "%ProgramFiles%\Go\bin\go.exe" set "PATH=%ProgramFiles%\Go\bin;%PATH%"
+
 where npm.cmd >nul 2>nul
 if errorlevel 1 (
   echo [ERROR] npm.cmd was not found in PATH.

@@ -2,6 +2,7 @@
   import { appState } from "$lib/appState.svelte";
   import { api } from "$lib/api";
   import { t, i18n, formatSyncTime, type LanguageSetting } from "$lib/i18n.svelte";
+  import packageInfo from "../../../package.json";
 
   let language = $state<LanguageSetting>((appState.settings.language as LanguageSetting) || "system");
   let outlineAutoNumber = $state(appState.settings.outlineAutoNumber);
@@ -90,7 +91,10 @@
 
 <div class="settings-page">
   <div class="settings-col">
-    <h1>{t("settings.title")}</h1>
+    <div class="settings-header">
+      <h1>{t("settings.title")}</h1>
+      <span class="version">v{packageInfo.version}</span>
+    </div>
 
     <section>
       <div class="row-label">{t("settings.language.label")}</div>
@@ -189,11 +193,21 @@
     max-width: 560px;
     padding: 56px 40px;
   }
-  h1 {
+  .settings-header {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
     margin: 0 0 28px;
+  }
+  h1 {
+    margin: 0;
     font-size: 22px;
     font-weight: 700;
     color: var(--text-primary);
+  }
+  .version {
+    font-size: 12px;
+    color: var(--text-secondary);
   }
   section {
     padding: 18px 0;
