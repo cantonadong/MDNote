@@ -4903,14 +4903,6 @@
     padding: 1px 4px;
     font: inherit;
   }
-  .editor-content-col :global(.tiptap span[data-type="mention"].mention-editing),
-  .editor-content-col :global(.tiptap span[data-type="mention"]:has(.mention-editing)),
-  .editor-content-col :global(.tiptap .mention-editing > span[data-type="mention"]) {
-    color: inherit;
-    background: transparent;
-    border-radius: 0;
-    padding: 0;
-  }
   /* A bare 1px border-top with margin around it means the element's own
      rendered box (what posAtCoords/getBoundingClientRect see) is just that
      1px sliver — hovering anywhere in its margin resolves to whichever
@@ -5000,9 +4992,29 @@
     position: relative;
     cursor: default;
     border: 1px solid var(--border);
-    padding: 6px 10px;
+    /* Keep editable content physically outside the fixed 8px cell-action
+       strips used by table.ts, including above and below a single line. */
+    padding: 10px;
     min-width: 50px;
-    vertical-align: top;
+    vertical-align: middle;
+  }
+  /* Document-level paragraph/list margins must not contribute to a table
+     row's intrinsic height. In particular, a one-item taskList otherwise
+     stacks the ul and li margins and makes its row taller than a plain-text
+     row. Keeping cell blocks marginless also leaves the visible padding as
+     one consistent edge-selection strip on all four sides. */
+  .editor-content-col :global(.tiptap td > p),
+  .editor-content-col :global(.tiptap th > p),
+  .editor-content-col :global(.tiptap td > ul),
+  .editor-content-col :global(.tiptap th > ul),
+  .editor-content-col :global(.tiptap td > ol),
+  .editor-content-col :global(.tiptap th > ol),
+  .editor-content-col :global(.tiptap td > ul > li),
+  .editor-content-col :global(.tiptap th > ul > li),
+  .editor-content-col :global(.tiptap td > ol > li),
+  .editor-content-col :global(.tiptap th > ol > li) {
+    margin-top: 0;
+    margin-bottom: 0;
   }
   .editor-content-col :global(.tiptap td p),
   .editor-content-col :global(.tiptap th p),
@@ -5012,10 +5024,9 @@
   .editor-content-col :global(.tiptap th summary) {
     cursor: text;
   }
-  .editor-content-col :global(.tiptap th.active-table-cell),
-  .editor-content-col :global(.tiptap td.active-table-cell) {
-    box-shadow: inset 0 0 0 2px #2383e2;
-  }
+  /* A text caret inside a cell is ordinary editing, not a one-cell
+     selection. Do not draw the old full-cell blue editing outline here;
+     CellSelection has the dedicated outer outline below. */
   .editor-content-col :global(.tiptap .selectedCell::after) {
     content: "";
     position: absolute;
@@ -5852,6 +5863,10 @@
     background: rgba(35, 131, 226, 0.13);
     border-radius: 4px;
     pointer-events: none;
+  }
+  .editor-content-col :global(.tiptap.cell-selection-dragging),
+  .editor-content-col :global(.tiptap.cell-selection-dragging *) {
+    cursor: default !important;
   }
   .multi-select-marquee {
     position: absolute;
