@@ -5,7 +5,7 @@ import { TableHeader as BaseTableHeader } from "@tiptap/extension-table-header";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import { Fragment } from "@tiptap/pm/model";
 import { CellSelection } from "@tiptap/pm/tables";
-import { Plugin } from "@tiptap/pm/state";
+import { Plugin, Selection, TextSelection } from "@tiptap/pm/state";
 import type { Transaction } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import { t } from "../../i18n.svelte";
@@ -100,21 +100,16 @@ export const Table = BaseTable.extend({
   },
 });
 
-type CellGesture = { anchorPos: number; pointerId: number };
+const CELL_EDGE_HIT_SIZE = 8;
+
+type CellGesture = { anchorPos: number };
 type TextGesture = {
   anchorCellPos: number;
-  anchorCell: HTMLTableCellElement;
+  anchorTextPos: number;
   startX: number;
   startY: number;
   crossedCell: boolean;
 };
-
-function isContentHit(target: HTMLElement): boolean {
-  // Paragraphs occupy the full inner text-line width of a cell. This makes
-  // both text and the same line's trailing blank area editable; only the
-  // cell padding around the paragraph belongs to cell selection.
-  return !!target.closest("p, summary, a, button, input, textarea, select, img, figure, code, [data-type='taskList']");
-}
 
 function cellAtPoint(view: EditorView, clientX: number, clientY: number): { element: HTMLTableCellElement; pos: number } | null {
   const target = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
@@ -127,103 +122,165 @@ function cellAtPoint(view: EditorView, clientX: number, clientY: number): { elem
   }
 }
 
+function isCellEdgeHit(cell: HTMLTableCellElement, clientX: number, clientY: number): boolean {
+  const rect = cell.getBoundingClientRect();
+  return clientX - rect.left <= CELL_EDGE_HIT_SIZE
+    || rect.right - clientX <= CELL_EDGE_HIT_SIZE
+    || clientY - rect.top <= CELL_EDGE_HIT_SIZE
+    || rect.bottom - clientY <= CELL_EDGE_HIT_SIZE;
+}
+
+function textPosInCell(view: EditorView, cellPos: number, clientX: number, clientY: number): number {
+  const coordinatePos = view.posAtCoords({ left: clientX, top: clientY })?.pos;
+  if (coordinatePos != null) {
+    const $coordinate = view.state.doc.resolve(coordinatePos);
+    if ($coordinate.parent.inlineContent) return coordinatePos;
+  }
+  // cellPos points before the cell node. +1 is inside the cell but before
+  // its first block, so Selection.near walks into the paragraph and yields
+  // a legal text cursor (normally cellPos + 2 for a plain paragraph).
+  const near = Selection.near(view.state.doc.resolve(cellPos + 1), 1);
+  if (near instanceof TextSelection) return near.head;
+  return Math.min(cellPos + 2, view.state.doc.content.size);
+}
+
 function cellPointerSelectionPlugin(): Plugin {
   let gesture: CellGesture | null = null;
   let textGesture: TextGesture | null = null;
   let ownerView: EditorView | null = null;
 
-  const move = (event: PointerEvent) => {
-    if (!gesture || !ownerView || event.pointerId !== gesture.pointerId) return;
+  const moveCell = (event: MouseEvent) => {
+    if (!gesture || !ownerView || !(event.buttons & 1)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
     const target = cellAtPoint(ownerView, event.clientX, event.clientY);
     if (!target) return;
     const selection = CellSelection.create(ownerView.state.doc, gesture.anchorPos, target.pos);
     if (!selection.eq(ownerView.state.selection)) ownerView.dispatch(ownerView.state.tr.setSelection(selection));
   };
 
-  const finish = (event: PointerEvent) => {
-    if (!gesture || event.pointerId !== gesture.pointerId) return;
+  const finishCell = () => {
+    if (!gesture) return;
     const view = ownerView;
     gesture = null;
+    view?.dom.classList.remove("cell-selection-dragging");
     ownerView = null;
     view?.dom.dispatchEvent(new CustomEvent("mdnote:cell-selection-finished"));
-    window.removeEventListener("pointermove", move, true);
-    window.removeEventListener("pointerup", finish, true);
-    window.removeEventListener("pointercancel", finish, true);
+    window.removeEventListener("mousemove", moveCell, true);
+    window.removeEventListener("mouseup", finishCell, true);
   };
 
   const moveText = (event: MouseEvent) => {
     if (!textGesture || !ownerView || !(event.buttons & 1)) return;
     if (!textGesture.crossedCell && Math.hypot(event.clientX - textGesture.startX, event.clientY - textGesture.startY) < 5) return;
-    // A press in editable content is first and foremost a caret/text
-    // gesture. Only promote it to rectangular cell selection after the
-    // browser has actually selected at least one character. This prevents
-    // click jitter (and ordinary caret placement) from becoming a drag.
-    const nativeSelection = window.getSelection();
-    if (!textGesture.crossedCell && (!nativeSelection || nativeSelection.isCollapsed)) return;
     const target = cellAtPoint(ownerView, event.clientX, event.clientY);
     if (!target) return;
-    if (!textGesture.crossedCell && target.element === textGesture.anchorCell) return;
+    // Selection transactions can redraw a cell and replace its DOM node.
+    // Compare stable document positions, not HTMLElement identity, or the
+    // first move after mousedown is falsely treated as crossing a boundary.
+    if (!textGesture.crossedCell && target.pos === textGesture.anchorCellPos) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const head = textPosInCell(ownerView, textGesture.anchorCellPos, event.clientX, event.clientY);
+      const selection = TextSelection.create(ownerView.state.doc, textGesture.anchorTextPos, head);
+      if (!selection.eq(ownerView.state.selection)) ownerView.dispatch(ownerView.state.tr.setSelection(selection));
+      return;
+    }
+
     const firstCross = !textGesture.crossedCell;
     textGesture.crossedCell = true;
     event.preventDefault();
+    event.stopImmediatePropagation();
+    if (firstCross) {
+      // Remove the browser's character highlight before painting the cell
+      // selection so both visual states never flash on the same frame.
+      window.getSelection()?.removeAllRanges();
+      ownerView.dom.classList.add("cell-selection-dragging");
+    }
     const selection = CellSelection.create(ownerView.state.doc, textGesture.anchorCellPos, target.pos);
     if (!selection.eq(ownerView.state.selection)) ownerView.dispatch(ownerView.state.tr.setSelection(selection));
-    if (firstCross) ownerView.dom.dispatchEvent(new CustomEvent("mdnote:cell-text-selection-started"));
+    // This event clears any text-formatting toolbar created while the drag
+    // was still inside its anchor cell and synchronizes the cell-selection
+    // UI. It must run after the CellSelection transaction is dispatched.
+    if (firstCross) ownerView.dom.dispatchEvent(new CustomEvent("mdnote:cell-selection-finished"));
   };
 
   const finishText = () => {
+    const view = ownerView;
+    const crossedCell = !!textGesture?.crossedCell;
+    view?.dom.classList.remove("cell-selection-dragging");
     textGesture = null;
     ownerView = null;
     window.removeEventListener("mousemove", moveText, true);
     window.removeEventListener("mouseup", finishText, true);
+    if (crossedCell) view?.dom.dispatchEvent(new CustomEvent("mdnote:cell-selection-finished"));
+  };
+
+  const startMouseGesture = (view: EditorView, event: MouseEvent): boolean => {
+    if (event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey) return false;
+    const target = cellAtPoint(view, event.clientX, event.clientY);
+    if (!target) return false;
+    // The cell's four fixed-width edge strips always own cell interaction,
+    // independently of its content length. Everything inside those strips
+    // starts as text interaction, including blank space after short text.
+    if (isCellEdgeHit(target.element, event.clientX, event.clientY)) {
+      event.preventDefault();
+      gesture = { anchorPos: target.pos };
+      ownerView = view;
+      window.getSelection()?.removeAllRanges();
+      view.dom.classList.add("cell-selection-dragging");
+      view.dispatch(view.state.tr.setSelection(CellSelection.create(view.state.doc, target.pos)));
+      window.addEventListener("mousemove", moveCell, true);
+      window.addEventListener("mouseup", finishCell, true);
+      return true;
+    }
+
+    // An interior press stays a text gesture until the pointer enters a
+    // different cell; that boundary crossing promotes it to CellSelection.
+    const anchorTextPos = textPosInCell(view, target.pos, event.clientX, event.clientY);
+    textGesture = {
+      anchorCellPos: target.pos,
+      anchorTextPos,
+      startX: event.clientX,
+      startY: event.clientY,
+      crossedCell: false,
+    };
+    ownerView = view;
+    event.preventDefault();
+    view.focus();
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, anchorTextPos)));
+    window.addEventListener("mousemove", moveText, true);
+    window.addEventListener("mouseup", finishText, true);
+    return true;
   };
 
   return new Plugin({
-    props: {
-      handleDOMEvents: {
-        mousedown: (view, event) => {
-          if (event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey) return false;
-          const target = cellAtPoint(view, event.clientX, event.clientY);
-          if (!target) return false;
-          if (isContentHit(event.target as HTMLElement)) {
-            textGesture = {
-              anchorCellPos: target.pos,
-              anchorCell: target.element,
-              startX: event.clientX,
-              startY: event.clientY,
-              crossedCell: false,
-            };
-            ownerView = view;
-            window.addEventListener("mousemove", moveText, true);
-            window.addEventListener("mouseup", finishText, true);
-            // Claim the mousedown so prosemirror-tables cannot start its own
-            // competing cell-selection gesture. Do not preventDefault: the
-            // browser still owns precise character selection inside this
-            // cell until our pointer crosses into another cell.
-            return true;
-          }
-
-          event.preventDefault();
-          const pointerId = (event as PointerEvent).pointerId ?? 1;
-          gesture = { anchorPos: target.pos, pointerId };
-          ownerView = view;
-          view.dispatch(view.state.tr.setSelection(CellSelection.create(view.state.doc, target.pos)));
-          window.addEventListener("pointermove", move, true);
-          window.addEventListener("pointerup", finish, true);
-          window.addEventListener("pointercancel", finish, true);
-          return true;
-        },
-      },
+    filterTransaction(transaction) {
+      // tableEditing must never replace an active interior text gesture
+      // with its own one-cell CellSelection. Edge gestures and a deliberate
+      // cross-cell promotion set their selections through our paths above.
+      return !(textGesture && !textGesture.crossedCell
+        && transaction.selectionSet
+        && transaction.selection instanceof CellSelection);
     },
-    view() {
+    view(view) {
+      // Capture before ProseMirror's bubbling handleDOMEvents chain. The
+      // stock tableEditing plugin registers a competing mousemove listener
+      // for every cell mousedown, even though its mousedown callback returns
+      // no handled flag, so plugin-prop ordering alone cannot prevent it.
+      const captureMouseDown = (event: MouseEvent) => {
+        if (startMouseGesture(view, event)) event.stopImmediatePropagation();
+      };
+      view.dom.addEventListener("mousedown", captureMouseDown, true);
       return {
         destroy() {
+          view.dom.removeEventListener("mousedown", captureMouseDown, true);
           gesture = null;
           textGesture = null;
+          ownerView?.dom.classList.remove("cell-selection-dragging");
           ownerView = null;
-          window.removeEventListener("pointermove", move, true);
-          window.removeEventListener("pointerup", finish, true);
-          window.removeEventListener("pointercancel", finish, true);
+          window.removeEventListener("mousemove", moveCell, true);
+          window.removeEventListener("mouseup", finishCell, true);
           window.removeEventListener("mousemove", moveText, true);
           window.removeEventListener("mouseup", finishText, true);
         },
