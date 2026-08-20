@@ -29,6 +29,10 @@ export const ToggleSummary = Node.create({
   addNodeView() {
     return ({ getPos, editor }) => {
       const dom = document.createElement("summary");
+      // Keep the native <summary> disclosure action from treating the whole
+      // editable title row as a toggle target. The dedicated icon below is
+      // the only control that expands or collapses the block.
+      dom.addEventListener("click", (e) => e.preventDefault());
       const icon = document.createElement("span");
       icon.className = "toggle-icon";
       icon.contentEditable = "false";

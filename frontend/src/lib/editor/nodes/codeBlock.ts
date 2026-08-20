@@ -4,7 +4,7 @@ import java from "highlight.js/lib/languages/java";
 import sql from "highlight.js/lib/languages/sql";
 
 export const codeLanguages = [
-  { value: "", label: "Plain text" },
+  { value: "", label: "纯文本" },
   { value: "sql", label: "SQL" },
   { value: "java", label: "Java" },
 ] as const;
@@ -29,13 +29,15 @@ export const CodeBlock = CodeBlockLowlight.extend({
       const select = document.createElement("select");
       select.className = "code-language-select";
       select.setAttribute("aria-label", "Code language");
+      const selectedLanguage = node.attrs.language ?? "";
       for (const language of codeLanguages) {
         const option = document.createElement("option");
         option.value = language.value;
         option.textContent = language.label;
+        option.selected = language.value === selectedLanguage;
         select.append(option);
       }
-      select.value = node.attrs.language ?? "";
+      select.value = selectedLanguage;
       select.addEventListener("change", () => {
         const pos = getPos();
         if (typeof pos !== "number") return;
