@@ -29,7 +29,9 @@ export const TextColor = Mark.create({
 
 export const UnderlineColor = Mark.create({
   name: "underlineColor",
-  priority: 1000,
+  // Keep this wrapper outside underline-style marks so its CSS custom
+  // property is inherited by wavy and dotted decorations.
+  priority: 1200,
 
   addAttributes() {
     return {
@@ -39,7 +41,7 @@ export const UnderlineColor = Mark.create({
         renderHTML: (attributes) =>
           attributes.color
             ? {
-                "data-underline-color": "",
+                "data-underline-color": attributes.color,
                 style: `--mdnote-underline-color: ${attributes.color}; text-decoration-color: ${attributes.color}; text-underline-offset: 2px`,
               }
             : {},
@@ -50,8 +52,17 @@ export const UnderlineColor = Mark.create({
   parseHTML() {
     return [
       {
+        tag: "span[data-underline-color]",
+        getAttrs: (element) => {
+          const color = (element as HTMLElement).getAttribute("data-underline-color")
+            || (element as HTMLElement).style.textDecorationColor;
+          return color ? { color } : false;
+        },
+      },
+      {
         style: "text-decoration-color",
-        getAttrs: (value) => (typeof value === "string" && value ? { color: value } : false),
+        getAttrs: (value) =>
+          typeof value === "string" && value && !value.startsWith("var(") ? { color: value } : false,
       },
     ];
   },

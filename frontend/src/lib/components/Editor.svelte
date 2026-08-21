@@ -42,6 +42,7 @@
   import { SlashTrigger } from "$lib/editor/nodes/slashTrigger";
   import { FullwidthHeadingShortcut } from "$lib/editor/nodes/fullwidthShortcuts";
   import { CodeBlock } from "$lib/editor/nodes/codeBlock";
+  import { Paragraph } from "$lib/editor/nodes/paragraph";
   import { slashMenuState } from "$lib/editor/slashMenu.svelte";
   import {
     type TableRef,
@@ -229,6 +230,8 @@
   let hoveredTableResizeBoundary = $state<{ x: number; top: number; bottom: number; index: number } | null>(null);
   let tableColResize = $state<{ x: number; top: number; bottom: number } | null>(null);
   let tableAddDragAxis = $state<"row" | "col" | null>(null);
+  let floatingTableScrollbar = $state<{ left: number; top: number; width: number; contentWidth: number } | null>(null);
+  let floatingTableScrollbarEl = $state<HTMLDivElement | null>(null);
   // Which single row/column grip to actually render — only the one under
   // the cursor, not every row/column at once, so the gutter doesn't turn
   // into a wall of grips the instant the table is hovered at all.
@@ -932,6 +935,7 @@
       contentColWidths,
       resizeBoundaries,
     };
+    syncFloatingTableScrollbar();
   }
 
   // findTable() walks *up* from a position inside a table to find its
@@ -983,6 +987,59 @@
     return firstVisibleRowLine - 15 * zoomScale;
   }
 
+  function tableAddColLeft(gutter: TableGutter) {
+    const visible = tableVisibleRect(gutter);
+    const lastColumnRight = gutter.cols[gutter.cols.length - 1]?.right ?? gutter.tableRight;
+    if (lastColumnRight <= gutter.tableViewportRight || !wrapperEl || !scrollEl) return lastColumnRight;
+    const containerRect = wrapperEl.getBoundingClientRect();
+    const viewportRect = scrollEl.getBoundingClientRect();
+    const viewportContentRight = viewportRect.left + scrollEl.clientWidth;
+    return viewportContentRight - containerRect.left - 18 * zoomScale - 2;
+  }
+
+  function tableAddColBridgeRect(gutter: TableGutter) {
+    const left = tableVisibleRect(gutter).right;
+    const right = tableAddColLeft(gutter);
+    return { left, width: Math.max(0, right - left) };
+  }
+
+  function syncFloatingTableScrollbar() {
+    if (!tableGutter || !wrapperEl || !scrollEl) {
+      floatingTableScrollbar = null;
+      return;
+    }
+    const table = tableElAt(tableGutter.tablePos);
+    const tableWrapper = table?.closest(".tableWrapper") as HTMLElement | null;
+    if (!table || !tableWrapper || tableWrapper.scrollWidth <= tableWrapper.clientWidth + 1) {
+      floatingTableScrollbar = null;
+      return;
+    }
+    const viewportRect = scrollEl.getBoundingClientRect();
+    const wrapperRect = tableWrapper.getBoundingClientRect();
+    const containerRect = wrapperEl.getBoundingClientRect();
+    if (wrapperRect.top >= viewportRect.bottom || wrapperRect.bottom <= viewportRect.bottom) {
+      floatingTableScrollbar = null;
+      return;
+    }
+    floatingTableScrollbar = {
+      left: wrapperRect.left - containerRect.left,
+      top: viewportRect.bottom - containerRect.top - 14 * zoomScale,
+      width: tableWrapper.clientWidth * zoomScale,
+      contentWidth: tableWrapper.scrollWidth * zoomScale,
+    };
+    requestAnimationFrame(() => {
+      if (floatingTableScrollbarEl) floatingTableScrollbarEl.scrollLeft = tableWrapper.scrollLeft;
+    });
+  }
+
+  function onFloatingTableScroll(e: Event) {
+    if (!tableGutter) return;
+    const table = tableElAt(tableGutter.tablePos);
+    const tableWrapper = table?.closest(".tableWrapper") as HTMLElement | null;
+    if (!table || !tableWrapper) return;
+    tableWrapper.scrollLeft = (e.currentTarget as HTMLElement).scrollLeft;
+    updateTableGutter(table);
+  }
   function visibleColumnOffsets(gutter: TableGutter, visible: { left: number; width: number }) {
     return internalOffsets(gutter.colWidths)
       .map((x) => gutter.tableLeft + x - visible.left)
@@ -2353,18 +2410,27 @@
       selectionToolbar = null;
       return;
     }
-    const rect = domSel.getRangeAt(0).getBoundingClientRect();
-    if (!rect.width && !rect.height) {
+    const range = domSel.getRangeAt(0);
+    const lineRects = Array.from(range.getClientRects()).filter((rect) => rect.width || rect.height);
+    const fallbackRect = range.getBoundingClientRect();
+    if (!lineRects.length && !fallbackRect.width && !fallbackRect.height) {
       selectionToolbar = null;
       return;
     }
+    const left = lineRects.length ? Math.min(...lineRects.map((rect) => rect.left)) : fallbackRect.left;
+    const right = lineRects.length ? Math.max(...lineRects.map((rect) => rect.right)) : fallbackRect.right;
+    const top = lineRects.length ? Math.min(...lineRects.map((rect) => rect.top)) : fallbackRect.top;
+    const viewportRect = scrollEl?.getBoundingClientRect();
+    const visibleLeft = viewportRect ? Math.max(left, viewportRect.left) : left;
+    const visibleRight = viewportRect ? Math.min(right, viewportRect.right) : right;
+    const visibleCenter = visibleRight > visibleLeft ? (visibleLeft + visibleRight) / 2 : (left + right) / 2;
     // Stored raw (container-relative, not yet divided by zoomScale) — same
     // convention as handleTop/dropIndicatorTop: the division happens once,
     // in the template, at render time.
     const containerRect = wrapperEl.getBoundingClientRect();
     selectionToolbar = {
-      top: rect.top - containerRect.top,
-      left: rect.left + rect.width / 2 - containerRect.left,
+      top: top - containerRect.top,
+      left: visibleCenter - containerRect.left,
     };
   }
 
@@ -2670,6 +2736,12 @@
     }
   }
 
+  function onTableWrapperScroll(e: Event) {
+    const tableWrapper = e.target instanceof HTMLElement ? e.target.closest(".tableWrapper") : null;
+    const table = tableWrapper?.querySelector("table") as HTMLTableElement | null;
+    if (table && tableGutter) updateTableGutter(table);
+  }
+
   // Same clamped posAtCoords→block-position resolution used by
   // updateDropTarget/onContentMouseMove, extracted since the margin-drag
   // selection needs it too and duplicating it a third time invites drift.
@@ -2872,13 +2944,14 @@
     if (tableEl) {
       updateTableGutter(tableEl);
       if (!tableDragActive) updateHoveredGrip(e.clientX, e.clientY);
-    } else if (tableGutter && !tableDragActive && !target?.closest?.(".table-gutter-btn, .table-gutter-add, .table-col-resize-hit")) {
+    } else if (tableGutter && !tableDragActive && !target?.closest?.(".table-gutter-btn, .table-gutter-add, .table-add-col-bridge, .table-col-resize-hit, .table-floating-scrollbar")) {
       // The grip/add buttons are absolutely-positioned siblings of the
       // <table>, not descendants of it — closest("table") alone would fail
       // the instant the cursor reaches one of them (reached by moving off
       // the table into the gutter strip to its left/above), clearing the
       // gutter out from under the very controls the user is trying to grab.
       tableGutter = null;
+      floatingTableScrollbar = null;
       hoveredRowIndex = null;
       hoveredColIndex = null;
       hoveredTableResizeBoundary = null;
@@ -2892,6 +2965,7 @@
     if (!menuOpen) updateHandle();
     if (!tableDragActive) {
       tableGutter = null;
+      floatingTableScrollbar = null;
       hoveredRowIndex = null;
       hoveredColIndex = null;
       hoveredTableResizeBoundary = null;
@@ -3810,22 +3884,24 @@
         SlashTrigger,
         StarterKit.configure({
           codeBlock: false,
+          paragraph: false,
           // Its default click-to-open just calls window.open, which inside
           // WebView2 spawns another embedded webview rather than the
           // user's actual browser — LinkClickHandler (links.ts) handles
           // opening via the system default browser instead.
           link: { openOnClick: false },
         }),
+        Paragraph,
         CodeBlock,
         FullwidthHeadingShortcut,
         Markdown.configure({ html: true, transformPastedText: true }),
         SearchHighlight,
         GrammarCheck,
         Highlight.configure({ multicolor: true }),
+        UnderlineColor,
         WavyUnderline,
         DotUnderline,
         TextColor,
-        UnderlineColor,
         Mention,
         JoinAdjacentLists,
         EmptyListItemDelete,
@@ -3845,7 +3921,7 @@
         FileLink,
         LinkClickHandler,
         Placeholder.configure({
-          placeholder: t("editor.placeholder"),
+          placeholder: ({ node }) => node.type.name === "codeBlock" ? "" : t("editor.placeholder"),
         }),
       ],
       content: appState.activeTab?.content ?? "",
@@ -3902,6 +3978,7 @@
       },
     });
     editorBridge.instance = editor;
+    editor.view.dom.addEventListener("scroll", onTableWrapperScroll, true);
     editor.view.dom.addEventListener("mdnote:cell-selection-finished", onTableCellSelectionFinished);
     editor.view.dom.addEventListener("mdnote:cell-text-selection-started", onTableCellTextSelectionStarted);
     editorBridge.scrollToPos = scrollToPos;
@@ -3925,6 +4002,7 @@
     scrollEl?.removeEventListener("scroll", onEditorScroll);
     window.removeEventListener("resize", queueTableWrapperSync);
     window.removeEventListener("mousemove", onWindowTableSelectionMouseMove, true);
+    editor?.view.dom.removeEventListener("scroll", onTableWrapperScroll, true);
     editor?.view.dom.removeEventListener("mdnote:cell-selection-finished", onTableCellSelectionFinished);
     editor?.view.dom.removeEventListener("mdnote:cell-text-selection-started", onTableCellTextSelectionStarted);
     slashMenuState.onSelect = null;
@@ -4299,10 +4377,18 @@
           <Icon name="grip4" size={16} />
         </button>
       {/if}
+      {@const addColBridge = tableAddColBridgeRect(tableGutter)}
+      {#if addColBridge.width > 0}
+        <div
+          class="table-add-col-bridge"
+          style={`left:${addColBridge.left / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; width:${addColBridge.width / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px`}
+          role="presentation"
+        ></div>
+      {/if}
       <button
         class="table-gutter-add table-add-col"
         class:hidden={tableAddDragAxis === "col"}
-        style={`left:${tableVisibleRect(tableGutter).right / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px`}
+        style={`left:${tableAddColLeft(tableGutter) / zoomScale}px; top:${tableGutter.tableTop / zoomScale}px; height:${(tableGutter.tableBottom - tableGutter.tableTop) / zoomScale}px`}
         title={t("table.addCol")}
         aria-label={t("table.addCol")}
         onmousedown={preventBlur}
@@ -4310,6 +4396,17 @@
       >
         <Icon name="plus" size={13} />
       </button>
+      {#if floatingTableScrollbar}
+        <div
+          class="table-floating-scrollbar"
+          bind:this={floatingTableScrollbarEl}
+          style={`left:${floatingTableScrollbar.left / zoomScale}px; top:${floatingTableScrollbar.top / zoomScale}px; width:${floatingTableScrollbar.width / zoomScale}px`}
+          onscroll={onFloatingTableScroll}
+          role="presentation"
+        >
+          <div style={`width:${floatingTableScrollbar.contentWidth / zoomScale}px`}></div>
+        </div>
+      {/if}
       {#if tableRowAdjust}
         {@const rowPreview = rowPreviewHeights(tableGutter, tableRowAdjust)}
         {@const rowPreviewHeight = sumSizes(rowPreview)}
@@ -4887,7 +4984,7 @@
     padding: 0 24px 0 8px;
     border: 1px solid var(--border);
     border-radius: 5px;
-    background: var(--code-bg);
+    background: #fff;
     color: var(--text-secondary);
     font: 12px/1 system-ui, sans-serif;
     cursor: pointer;
@@ -5267,9 +5364,10 @@
     display: flex;
     align-items: center;
     gap: 2px;
-    cursor: pointer;
+    cursor: text;
     font-weight: 500;
     list-style: none;
+    outline: none;
   }
   /* The native disclosure marker only renders because Chromium's UA
      stylesheet gives <summary> `display: list-item` — switching it to flex
@@ -5290,6 +5388,7 @@
     border-radius: 4px;
     flex-shrink: 0;
     color: var(--text-secondary);
+    cursor: pointer;
   }
   .editor-content-col :global(.tiptap .toggle-icon:hover) {
     background: var(--hover-bg-strong);
@@ -5478,6 +5577,11 @@
   .editor-content-col :global(.tiptap [data-underline-color]) {
     text-decoration-color: var(--mdnote-underline-color);
   }
+  .editor-content-col :global(.tiptap [data-wavy]) {
+    text-decoration-line: underline;
+    text-decoration-style: wavy;
+    text-decoration-color: var(--mdnote-underline-color, currentColor);
+  }
   .editor-content-col :global(.tiptap [data-underline-color] u),
   .editor-content-col :global(.tiptap [data-underline-color] [data-wavy]) {
     text-decoration-color: var(--mdnote-underline-color) !important;
@@ -5598,6 +5702,56 @@
   .table-add-col {
     width: 18px;
     border-radius: 0 4px 4px 0;
+    opacity: 0.45;
+    transition: opacity 0.12s ease;
+  }
+  .table-add-col-bridge {
+    position: absolute;
+    z-index: 39;
+    background: transparent;
+  }
+  .table-add-col-bridge:hover + .table-add-col,
+  .table-add-col:hover {
+    opacity: 1;
+  }
+  .table-floating-scrollbar {
+    position: absolute;
+    height: 14px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    z-index: 55;
+    background: var(--content-bg);
+    scrollbar-width: auto;
+    scrollbar-color: rgba(55, 53, 47, 0.28) transparent;
+  }
+  .table-floating-scrollbar > div {
+    height: 1px;
+  }
+  .table-floating-scrollbar::-webkit-scrollbar {
+    height: 14px;
+  }
+  .table-floating-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .table-floating-scrollbar::-webkit-scrollbar-thumb {
+    min-width: 48px;
+    border: 4px solid transparent;
+    border-radius: 999px;
+    background: rgba(55, 53, 47, 0.28);
+    background-clip: content-box;
+  }
+  .table-floating-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(55, 53, 47, 0.38);
+    background-clip: content-box;
+  }
+  .table-floating-scrollbar::-webkit-scrollbar-button:horizontal:end:single-button {
+    width: 14px;
+    background:
+      linear-gradient(45deg, transparent 50%, rgba(55, 53, 47, 0.28) 50%) 4px 4px / 6px 6px no-repeat,
+      linear-gradient(135deg, rgba(55, 53, 47, 0.28) 50%, transparent 50%) 4px 4px / 6px 6px no-repeat;
+  }
+  .table-floating-scrollbar::-webkit-scrollbar-button:horizontal:start:single-button {
+    width: 0;
   }
   .table-col-resize-hit {
     position: absolute;

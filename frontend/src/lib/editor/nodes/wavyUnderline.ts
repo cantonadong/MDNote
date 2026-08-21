@@ -6,15 +6,15 @@ import { Mark, mergeAttributes } from "@tiptap/core";
 // tiptap-markdown's raw-HTML fallback serializer/parser for its round trip.
 export const WavyUnderline = Mark.create({
   name: "wavyUnderline",
+  priority: 1100,
   parseHTML() {
-    return [{ tag: "u[data-wavy]" }];
+    return [{ tag: "span[data-wavy]" }, { tag: "u[data-wavy]" }];
   },
   renderHTML({ HTMLAttributes }) {
     return [
-      "u",
+      "span",
       mergeAttributes(HTMLAttributes, {
         "data-wavy": "",
-        style: "text-decoration-line: underline; text-decoration-style: wavy; text-decoration-color: var(--mdnote-underline-color, currentColor);",
       }),
       0,
     ];
