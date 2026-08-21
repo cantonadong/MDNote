@@ -5,6 +5,8 @@
   import { t } from "$lib/i18n.svelte";
   import RasterIcon from "./RasterIcon.svelte";
 
+  let { collapsed = $bindable(false), foregroundMode = false }: { collapsed?: boolean; foregroundMode?: boolean } = $props();
+
   function jump(pos: number) {
     editorBridge.scrollToPos?.(pos);
   }
@@ -13,7 +15,6 @@
     appState.settings.outlineAutoNumber ? numberOutline(appState.outlineItems) : null,
   );
   let emptyHeading = $derived(t("outline.emptyHeading"));
-  let collapsed = $state(false);
 
   function closeOutline(e: MouseEvent) {
     e.preventDefault();
@@ -28,7 +29,7 @@
   }
 </script>
 
-<aside class="outline" class:collapsed>
+<aside class="outline" class:collapsed class:foreground-mode={foregroundMode}>
   {#if collapsed}
     <button type="button" class="rail-btn" title={t("outline.title")} aria-label={t("outline.title")} onclick={openOutline}>
       <RasterIcon name="left" size={16} />
@@ -69,6 +70,7 @@
     padding: 0 8px 12px;
   }
   .outline.collapsed { width:32px; padding:0; overflow:hidden; cursor:pointer; }
+  .outline.foreground-mode { visibility:hidden; pointer-events:none; }
   .rail-btn,
   .outline-title button {
     border: 0;

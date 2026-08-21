@@ -42,11 +42,29 @@ taskkill /F /IM mdnote.exe >nul 2>nul
 
 echo [2/2] Building build\bin\MDNote.exe...
 rem Do not add -clean: build\bin may contain the user's mdnote.ini settings.
+rem Wails only regenerates the Windows icon when icon.ico is absent. Remove
+rem this generated cache so the current build\appicon.png is always embedded.
+if not exist "%~dp0build\appicon.png" (
+  echo [ERROR] App icon was not found: build\appicon.png
+  goto :failed
+)
+if exist "%~dp0build\windows\icon.ico" del /F /Q "%~dp0build\windows\icon.ico"
+if exist "%~dp0build\windows\icon.ico" (
+  echo [ERROR] Could not remove the cached Windows icon: build\windows\icon.ico
+  goto :failed
+)
 "%WAILS%" build -ldflags "-s -w" -o MDNote.exe
 if errorlevel 1 (
   echo [ERROR] Build failed.
   goto :failed
 )
+
+if not exist "%~dp0build\windows\icon.ico" (
+  echo [ERROR] Wails did not generate build\windows\icon.ico from build\appicon.png.
+  goto :failed
+)
+powershell.exe -NoProfile -Command "$source=Get-Item -LiteralPath '%~dp0build\appicon.png'; $generated=Get-Item -LiteralPath '%~dp0build\windows\icon.ico'; if($generated.LastWriteTimeUtc -lt $source.LastWriteTimeUtc){ Write-Host '[ERROR] Generated icon.ico is older than appicon.png.'; exit 1 }"
+if errorlevel 1 goto :failed
 
 if not exist "%TARGET%" (
   echo [ERROR] Wails reported success, but the output file does not exist:

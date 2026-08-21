@@ -5,9 +5,9 @@
   import { appState, parentDir } from "$lib/appState.svelte";
   import { api, type FileEntry } from "$lib/api";
   import { t } from "$lib/i18n.svelte";
+  let { collapsed = $bindable(false), foregroundMode = false }: { collapsed?: boolean; foregroundMode?: boolean } = $props();
 
   let rootChildren = $state<FileEntry[] | null>(null);
-  let collapsed = $state(false);
 
   function selectActiveTabDirectory() {
     const path = appState.activeTab?.path;
@@ -86,7 +86,7 @@
   }
 </script>
 
-<aside class="sidebar" class:collapsed>
+<aside class="sidebar" class:collapsed class:foreground-mode={foregroundMode}>
   {#if collapsed}
     <button type="button" class="collapse-rail-btn" title="MDNote" aria-label="MDNote" onclick={reopenSidebar}>
       <RasterIcon name="right" size={16} />
@@ -197,6 +197,7 @@
     width: 32px;
     cursor: pointer;
   }
+  .sidebar.foreground-mode { visibility:hidden; pointer-events:none; }
   .collapse-rail-btn,
   .collapse-btn {
     border: 0;

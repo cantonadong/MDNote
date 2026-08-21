@@ -25,6 +25,8 @@ const dict: Record<Locale, Record<string, string>> = {
   zh: {
     "sidebar.settings": "设置",
     "sidebar.sync": "同步",
+    "sidebar.foreground": "前台固顶",
+    "sidebar.foregroundOff": "取消前台固顶",
     "update.ready": "已准备升级",
     "update.downloaded": "新版本 {version} 已下载完成",
     "update.restart": "升级并重启",
@@ -243,6 +245,8 @@ const dict: Record<Locale, Record<string, string>> = {
   en: {
     "sidebar.settings": "Settings",
     "sidebar.sync": "Sync",
+    "sidebar.foreground": "Always on top",
+    "sidebar.foregroundOff": "Turn off always on top",
     "update.ready": "Update ready",
     "update.downloaded": "Version {version} has been downloaded",
     "update.restart": "Update & restart",

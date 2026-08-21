@@ -198,6 +198,8 @@
     tableRight: number;
     tableViewportLeft: number;
     tableViewportRight: number;
+    tableViewportTop: number;
+    tableViewportBottom: number;
     visibleColCount: number;
     // Container(wrapperEl)-relative rects, in the same "zoomed" pixel space
     // as everything else computed via getBoundingClientRect() in this file
@@ -876,11 +878,14 @@
     const tableWrapperEl = tableEl.closest(".tableWrapper") as HTMLElement | null;
     const tableWrapperRect = tableWrapperEl?.getBoundingClientRect() ?? tableRect;
     const tableWrapperStyle = tableWrapperEl ? getComputedStyle(tableWrapperEl) : null;
+    const scrollRect = scrollEl?.getBoundingClientRect() ?? containerRect;
     const tableViewportLeft = tableWrapperRect.left - containerRect.left;
     const tableViewportRight =
       tableWrapperRect.right -
       containerRect.left -
       (tableWrapperStyle ? Number.parseFloat(tableWrapperStyle.paddingRight) || (tableWrapperEl?.classList.contains("wide-table-wrapper") ? TABLE_ADD_COL_GUTTER : 0) : 0);
+    const tableViewportTop = scrollRect.top - containerRect.top;
+    const tableViewportBottom = scrollRect.bottom - containerRect.top;
     const rowEls = Array.from(tableEl.rows);
     const rows = rowEls.map((r) => {
       const rect = r.getBoundingClientRect();
@@ -917,6 +922,8 @@
       tableRight: tableRect.right - containerRect.left,
       tableViewportLeft,
       tableViewportRight,
+      tableViewportTop,
+      tableViewportBottom,
       visibleColCount: firstRowCells.length,
       rows,
       cols,
@@ -957,6 +964,23 @@
     const right = Math.min(gutter.tableRight, gutter.tableViewportRight);
     const width = Math.max(0, right - left);
     return { left, right: left + width, width };
+  }
+
+  // Keep each grip centred on an actual visible grid line. When a wide table
+  // is horizontally scrolled, its original left edge can be off-screen; the
+  // same applies to the top edge of a tall table after vertical scrolling.
+  function tableRowGripLeft(gutter: TableGutter) {
+    const firstVisibleColumnLine = [gutter.tableLeft, ...gutter.cols.map((col) => col.left)]
+      .filter((x) => x >= gutter.tableViewportLeft && x <= gutter.tableViewportRight)
+      .sort((a, b) => a - b)[0] ?? gutter.tableViewportLeft;
+    return firstVisibleColumnLine - 15 * zoomScale;
+  }
+
+  function tableColGripTop(gutter: TableGutter) {
+    const firstVisibleRowLine = [gutter.tableTop, ...gutter.rows.map((row) => row.top)]
+      .filter((y) => y >= gutter.tableViewportTop && y <= gutter.tableViewportBottom)
+      .sort((a, b) => a - b)[0] ?? gutter.tableViewportTop;
+    return firstVisibleRowLine - 15 * zoomScale;
   }
 
   function visibleColumnOffsets(gutter: TableGutter, visible: { left: number; width: number }) {
@@ -2640,6 +2664,10 @@
   function onEditorScroll() {
     updateHandle();
     updateSelectionToolbar();
+    if (tableGutter) {
+      const table = tableElAt(tableGutter.tablePos);
+      if (table) updateTableGutter(table);
+    }
   }
 
   // Same clamped posAtCoords→block-position resolution used by
@@ -4232,7 +4260,7 @@
         {@const row = tableGutter.rows[rowIndex]}
         <button
           class="table-gutter-btn table-row-grip"
-          style={`top:${(row.top + row.bottom) / 2 / zoomScale - 15}px; left:${tableGutter.tableLeft / zoomScale - 15}px`}
+          style={`top:${(row.top + row.bottom) / 2 / zoomScale - 15}px; left:${tableRowGripLeft(tableGutter) / zoomScale}px`}
           title={t("table.rowGrip")}
           aria-label={t("table.rowGrip")}
           onmousedown={preventBlur}
@@ -4261,7 +4289,7 @@
         {@const colRight = Math.min(col.right, visible.right)}
         <button
           class="table-gutter-btn table-col-grip"
-          style={`left:${(colLeft + colRight) / 2 / zoomScale - 15}px; top:${tableGutter.tableTop / zoomScale - 15}px`}
+          style={`left:${(colLeft + colRight) / 2 / zoomScale - 15}px; top:${tableColGripTop(tableGutter) / zoomScale}px`}
           title={t("table.colGrip")}
           aria-label={t("table.colGrip")}
           onmousedown={preventBlur}

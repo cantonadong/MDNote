@@ -9,10 +9,98 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"unsafe"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/sys/windows"
 )
+
+var (
+	foregroundUser32         = windows.NewLazySystemDLL("user32.dll")
+	foregroundGDI32          = windows.NewLazySystemDLL("gdi32.dll")
+	foregroundFindWindowW    = foregroundUser32.NewProc("FindWindowW")
+	foregroundSetWindowPos   = foregroundUser32.NewProc("SetWindowPos")
+	foregroundSetWindowRgn   = foregroundUser32.NewProc("SetWindowRgn")
+	foregroundGetWindowRect  = foregroundUser32.NewProc("GetWindowRect")
+	foregroundGetClientRect  = foregroundUser32.NewProc("GetClientRect")
+	foregroundClientToScreen = foregroundUser32.NewProc("ClientToScreen")
+	foregroundGetDPI         = foregroundUser32.NewProc("GetDpiForWindow")
+	foregroundCreateRectRgn  = foregroundGDI32.NewProc("CreateRectRgn")
+)
+
+type foregroundRect struct{ Left, Top, Right, Bottom int32 }
+type foregroundPoint struct{ X, Y int32 }
+
+// ApplyForegroundWindowRegion leaves the native window and WebView at their
+// exact current geometry and only clips away the two sidebar strips. Because
+// the editor is never moved, resized or reflowed, the centre of the window is
+// pixel-identical before and after the mode switch.
+func (a *App) ApplyForegroundWindowRegion(leftCSS, rightCSS float64, enabled, topmost bool) error {
+	title, err := windows.UTF16PtrFromString("MDNote")
+	if err != nil {
+		return err
+	}
+	hwnd, _, callErr := foregroundFindWindowW.Call(0, uintptr(unsafe.Pointer(title)))
+	if hwnd == 0 {
+		return fmt.Errorf("MDNote window not found: %v", callErr)
+	}
+
+	const swpZOrderOnly = 0x0001 | 0x0002 | 0x0010 | 0x0200 // NOSIZE|NOMOVE|NOACTIVATE|NOOWNERZORDER
+	hwndTopmost := ^uintptr(0)                              // HWND_TOPMOST (-1)
+	hwndNotTopmost := ^uintptr(1)                           // HWND_NOTOPMOST (-2)
+	insertAfter := hwndNotTopmost
+	if topmost {
+		insertAfter = hwndTopmost
+	}
+
+	foregroundSetWindowPos.Call(hwnd, insertAfter, 0, 0, 0, 0, swpZOrderOnly)
+
+	if !enabled {
+		ok, _, setErr := foregroundSetWindowRgn.Call(hwnd, 0, 1)
+		if ok == 0 {
+			return fmt.Errorf("SetWindowRgn reset failed: %v", setErr)
+		}
+		return nil
+	}
+
+	var windowRect, clientRect foregroundRect
+	clientOrigin := foregroundPoint{}
+	if ok, _, _ := foregroundGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&windowRect))); ok == 0 {
+		return fmt.Errorf("GetWindowRect failed")
+	}
+	if ok, _, _ := foregroundGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&clientRect))); ok == 0 {
+		return fmt.Errorf("GetClientRect failed")
+	}
+	if ok, _, _ := foregroundClientToScreen.Call(hwnd, uintptr(unsafe.Pointer(&clientOrigin))); ok == 0 {
+		return fmt.Errorf("ClientToScreen failed")
+	}
+	dpi, _, _ := foregroundGetDPI.Call(hwnd)
+	if dpi == 0 {
+		dpi = 96
+	}
+	scale := float64(dpi) / 96
+	windowWidth := windowRect.Right - windowRect.Left
+	leftFrame := clientOrigin.X - windowRect.Left
+	topFrame := clientOrigin.Y - windowRect.Top
+	rightFrame := windowRect.Right - (clientOrigin.X + clientRect.Right)
+	clipLeft := leftFrame + int32(leftCSS*scale+0.5)
+	clipRight := windowWidth - rightFrame - int32(rightCSS*scale+0.5)
+	clipTop := topFrame
+	clipBottom := topFrame + clientRect.Bottom
+	if clipRight <= clipLeft {
+		return fmt.Errorf("invalid foreground window region")
+	}
+	region, _, regionErr := foregroundCreateRectRgn.Call(
+		uintptr(clipLeft), uintptr(clipTop), uintptr(clipRight+1), uintptr(clipBottom+1),
+	)
+	if region == 0 {
+		return fmt.Errorf("CreateRectRgn failed: %v", regionErr)
+	}
+	if ok, _, setErr := foregroundSetWindowRgn.Call(hwnd, region, 1); ok == 0 {
+		return fmt.Errorf("SetWindowRgn failed: %v", setErr)
+	}
+	return nil
+}
 
 // App struct holds the Wails runtime context that fs/dialog calls need.
 type App struct {

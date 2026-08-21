@@ -5,6 +5,11 @@
   import { t } from "$lib/i18n.svelte";
   import { api } from "$lib/api";
 
+  let {
+    foregroundMode = false,
+    onToggleForeground,
+  }: { foregroundMode?: boolean; onToggleForeground: () => void } = $props();
+
   let scrollEl: HTMLDivElement;
   let draggingId: string | null = $state(null);
   let dragOverId: string | null = $state(null);
@@ -177,16 +182,22 @@
   let menuHasLeft = $derived(menuTabIndex > 0);
   let menuHasRight = $derived(menuTabIndex !== -1 && menuTabIndex < appState.tabs.length - 1);
   let menuHasOthers = $derived(appState.tabs.length > 1);
+  let foregroundTitle = $derived(
+    appState.settingsActive
+      ? t("settings.tabTitle")
+      : stripMdExt(appState.tabs.find((tab) => tab.id === appState.activeTabId)?.title ?? ""),
+  );
 </script>
 
 <svelte:window onclick={menuTab ? closeMenu : undefined} />
 
-<div class="tabs">
+<div class="tabs" class:foreground-mode={foregroundMode}>
   <div class="tabs-scroll" bind:this={scrollEl} onwheel={onWheel}>
     {#each appState.tabs as tab (tab.id)}
       <div
         class="tab"
         class:active={tab.id === appState.activeTabId && !appState.settingsActive}
+        class:foreground-hidden={foregroundMode}
         class:drag-over={dragOverId === tab.id}
         draggable={renamingId !== tab.id}
         onclick={() => select(tab)}
@@ -230,6 +241,7 @@
       <div
         class="tab settings-tab"
         class:active={appState.settingsActive}
+        class:foreground-hidden={foregroundMode}
         onclick={() => (appState.settingsActive = true)}
         onmousedown={onSettingsMouseDown}
         role="presentation"
@@ -257,6 +269,9 @@
       role="presentation"
     ></div>
   </div>
+  {#if foregroundMode}
+    <div class="foreground-title">{foregroundTitle}</div>
+  {/if}
   <button
     class="new-tab-btn"
     title={t("tabs.newTab")}
@@ -266,6 +281,16 @@
     onclick={() => appState.newTab()}
   >
     <Icon name="plus" size={15} />
+  </button>
+  <button
+    class="foreground-btn"
+    class:active={foregroundMode}
+    title={t(foregroundMode ? "sidebar.foregroundOff" : "sidebar.foreground")}
+    aria-label={t(foregroundMode ? "sidebar.foregroundOff" : "sidebar.foreground")}
+    aria-pressed={foregroundMode}
+    onclick={onToggleForeground}
+  >
+    <Icon name="pin" size={15} />
   </button>
 </div>
 
@@ -285,6 +310,7 @@
 
 <style>
   .tabs {
+    position: relative;
     display: flex;
     align-items: center;
     height: 34px;
@@ -294,6 +320,8 @@
   }
   .tabs-scroll {
     display: flex;
+    flex: 1;
+    min-width: 0;
     overflow-x: auto;
     height: 100%;
     scrollbar-width: none;
@@ -408,7 +436,8 @@
     background: var(--hover-bg-strong);
     color: var(--text-primary);
   }
-  .new-tab-btn {
+  .new-tab-btn,
+  .foreground-btn {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -425,6 +454,44 @@
   .new-tab-btn:hover {
     background: var(--hover-bg);
     color: var(--text-primary);
+  }
+  .tab.foreground-hidden {
+    display: none;
+  }
+  .tabs.foreground-mode {
+    --wails-draggable: drag;
+    -webkit-app-region: drag;
+  }
+  .tabs.foreground-mode .tab,
+  .tabs.foreground-mode .new-tab-btn,
+  .tabs.foreground-mode .foreground-btn {
+    --wails-draggable: no-drag;
+    -webkit-app-region: no-drag;
+  }
+  .foreground-title {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    max-width: calc(100% - 140px);
+    transform: translate(-50%, -50%);
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .foreground-btn {
+    margin-left:2px;
+    margin-right:0;
+  }
+  .foreground-btn:hover {
+    background:var(--hover-bg);
+    color:var(--text-primary);
+  }
+  .foreground-btn.active {
+    background:var(--active-bg);
+    color:var(--accent);
   }
   .context-menu {
     position: fixed;

@@ -57,6 +57,25 @@ function goApp(): any {
 }
 
 export const api = {
+  getWindowSize: async (): Promise<{ w: number; h: number }> => {
+    const runtime = (window as any).runtime;
+    return runtime?.WindowGetSize ? runtime.WindowGetSize() : { w: window.outerWidth, h: window.outerHeight };
+  },
+  getWindowPosition: async (): Promise<{ x: number; y: number }> => {
+    const runtime = (window as any).runtime;
+    return runtime?.WindowGetPosition ? runtime.WindowGetPosition() : { x: window.screenX, y: window.screenY };
+  },
+  setWindowSize: (width: number, height: number): void => {
+    (window as any).runtime?.WindowSetSize?.(width, height);
+  },
+  setWindowPosition: (x: number, y: number): void => {
+    (window as any).runtime?.WindowSetPosition?.(x, y);
+  },
+  setWindowMinSize: (width: number, height: number): void => {
+    (window as any).runtime?.WindowSetMinSize?.(width, height);
+  },
+  applyForegroundWindowRegion: (left: number, right: number, enabled: boolean, topmost: boolean): Promise<void> =>
+    goApp().ApplyForegroundWindowRegion(left, right, enabled, topmost),
   getSettings: (): Promise<Settings> => goApp().GetSettings(),
   saveOpenTabs: (paths: string[], activePath: string): Promise<void> => goApp().SaveOpenTabs(paths, activePath),
   selectRootDir: (): Promise<Settings> => goApp().SelectRootDir(),

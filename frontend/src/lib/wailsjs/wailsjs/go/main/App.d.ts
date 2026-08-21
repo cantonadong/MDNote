@@ -4,6 +4,8 @@ import {main} from '../models';
 
 export function AddDictionaryWord(arg1:string):Promise<main.Settings>;
 
+export function ApplyForegroundWindowRegion(arg1:number,arg2:number,arg3:boolean,arg4:boolean):Promise<void>;
+
 export function ApplyUpdate():Promise<void>;
 
 export function Basename(arg1:string):Promise<string>;
