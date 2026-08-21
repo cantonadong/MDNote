@@ -2,6 +2,7 @@ import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { createLowlight } from "lowlight";
 import java from "highlight.js/lib/languages/java";
 import sql from "highlight.js/lib/languages/sql";
+import plaintext from "highlight.js/lib/languages/plaintext";
 
 export const codeLanguages = [
   { value: "", label: "纯文本" },
@@ -14,6 +15,7 @@ export const codeLanguages = [
 const lowlight = createLowlight();
 lowlight.register("sql", sql);
 lowlight.register("java", java);
+lowlight.register("plaintext", plaintext);
 
 export const CodeBlock = CodeBlockLowlight.extend({
   addNodeView() {
@@ -47,7 +49,7 @@ export const CodeBlock = CodeBlockLowlight.extend({
             language: select.value || null,
           }),
         );
-        editor.commands.focus();
+        editor.commands.focus(undefined, { scrollIntoView: false });
       });
       dom.append(select);
 
@@ -66,4 +68,4 @@ export const CodeBlock = CodeBlockLowlight.extend({
       };
     };
   },
-}).configure({ lowlight });
+}).configure({ lowlight, defaultLanguage: "plaintext" });
