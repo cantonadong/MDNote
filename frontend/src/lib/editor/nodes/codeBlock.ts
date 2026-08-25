@@ -5,7 +5,7 @@ import sql from "highlight.js/lib/languages/sql";
 import plaintext from "highlight.js/lib/languages/plaintext";
 
 export const codeLanguages = [
-  { value: "", label: "纯文本" },
+  { value: "plaintext", label: "纯文本" },
   { value: "sql", label: "SQL" },
   { value: "java", label: "Java" },
 ] as const;
@@ -31,7 +31,7 @@ export const CodeBlock = CodeBlockLowlight.extend({
       const select = document.createElement("select");
       select.className = "code-language-select";
       select.setAttribute("aria-label", "Code language");
-      const selectedLanguage = node.attrs.language ?? "";
+      const selectedLanguage = node.attrs.language || "plaintext";
       for (const language of codeLanguages) {
         const option = document.createElement("option");
         option.value = language.value;
@@ -46,7 +46,7 @@ export const CodeBlock = CodeBlockLowlight.extend({
         editor.view.dispatch(
           editor.view.state.tr.setNodeMarkup(pos, undefined, {
             ...node.attrs,
-            language: select.value || null,
+            language: select.value,
           }),
         );
         editor.commands.focus(undefined, { scrollIntoView: false });
@@ -59,7 +59,7 @@ export const CodeBlock = CodeBlockLowlight.extend({
         update(updatedNode) {
           if (updatedNode.type.name !== "codeBlock") return false;
           node = updatedNode;
-          select.value = updatedNode.attrs.language ?? "";
+          select.value = updatedNode.attrs.language || "plaintext";
           return true;
         },
         stopEvent(event) {

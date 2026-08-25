@@ -367,7 +367,7 @@ export function deleteSelectedRowsAndColumns(
       return row.type.create(row.attrs, cells, row.marks);
     });
   rows[0] = retypeRow(rows[0], editor.state.schema, "tableHeader");
-  const removedIndexColumn = !!ref.node.attrs.showIndexColumn && colFrom === 0;
+  const removedIndexColumn = !!ref.node.attrs.showIndexColumn && colTo > colFrom && colFrom === 0;
   const attrs = removedIndexColumn ? { ...ref.node.attrs, showIndexColumn: false } : ref.node.attrs;
   const newTable = ref.node.type.create(attrs, rows, ref.node.marks);
   editor.view.dispatch(editor.state.tr.replaceWith(ref.pos, ref.pos + ref.node.nodeSize, newTable));

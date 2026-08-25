@@ -8,7 +8,7 @@
   import { Markdown } from "tiptap-markdown";
   import { Placeholder } from "@tiptap/extensions";
   import { TaskList } from "@tiptap/extension-task-list";
-  import { TaskItem } from "@tiptap/extension-task-item";
+  import { TaskItem } from "$lib/editor/nodes/taskItem";
   import { Highlight } from "@tiptap/extension-highlight";
   import HighlightColorPicker from "./HighlightColorPicker.svelte";
   import { Table, TableCell, TableHeader } from "$lib/editor/nodes/table";
@@ -2706,18 +2706,45 @@
   }
 
   function deleteSelectedTableRowsAndColumns() {
-    if (!editor || !(editor.state.selection instanceof CellSelection)) return;
+    if (!editor) return;
+    const selected = selectedTableRect();
+    if (!selected) return;
+    tableDeleteSelectedRowsAndColumns(editor, selected.ref, selected.top, selected.bottom, selected.left, selected.right);
+    finishSelectedTableDeletion();
+  }
+
+  function selectedTableRect(): { ref: TableRef; top: number; bottom: number; left: number; right: number } | null {
+    if (!editor || !(editor.state.selection instanceof CellSelection)) return null;
     const selection = editor.state.selection;
     const ref = findTable(editor, selection.$anchorCell.pos);
-    if (!ref) return;
+    if (!ref) return null;
     const tableStart = ref.pos + 1;
     const rect = TableMap.get(ref.node).rectBetween(
       selection.$anchorCell.pos - tableStart,
       selection.$headCell.pos - tableStart,
     );
-    tableDeleteSelectedRowsAndColumns(editor, ref, rect.top, rect.bottom, rect.left, rect.right);
+    return { ref, ...rect };
+  }
+
+  function finishSelectedTableDeletion() {
     tableCellSelectionRect = null;
     tableSelectionToolbarVisible = false;
+  }
+
+  function deleteSelectedTableRows() {
+    if (!editor) return;
+    const selected = selectedTableRect();
+    if (!selected) return;
+    tableDeleteSelectedRowsAndColumns(editor, selected.ref, selected.top, selected.bottom, 0, 0);
+    finishSelectedTableDeletion();
+  }
+
+  function deleteSelectedTableColumns() {
+    if (!editor) return;
+    const selected = selectedTableRect();
+    if (!selected) return;
+    tableDeleteSelectedRowsAndColumns(editor, selected.ref, 0, 0, selected.left, selected.right);
+    finishSelectedTableDeletion();
   }
 
   function clearSelectionFormatting(e: MouseEvent) {
@@ -3342,7 +3369,7 @@
       case "blockquote":
         return { type: "blockquote", content: [{ type: "paragraph" }] };
       case "codeBlock":
-        return { type: "codeBlock" };
+        return { type: "codeBlock", attrs: { language: "plaintext" } };
       case "table":
         const tableColumnWidths = defaultTableColumnWidths();
         return {
@@ -3489,7 +3516,11 @@
       case "codeBlock": {
         // Code blocks don't support marks/inline atoms — collapse to plain text.
         const text = inline.map((n) => (typeof n.text === "string" ? n.text : "")).join("");
-        return { type: "codeBlock", content: text ? [{ type: "text", text }] : [] };
+        return {
+          type: "codeBlock",
+          attrs: { language: "plaintext" },
+          content: text ? [{ type: "text", text }] : [],
+        };
       }
       case "table": {
         const widths = defaultTableColumnWidths();
@@ -4200,6 +4231,8 @@
       >
         <button onmousedown={preventBlur} onclick={copySelectedTableCells}>{t("table.copySelectedCells")}</button>
         <button onmousedown={preventBlur} onclick={clearSelectedTableCells}>{t("table.clearSelectedCells")}</button>
+        <button class="menu-danger" onmousedown={preventBlur} onclick={deleteSelectedTableRows}>{t("table.deleteSelectedRows")}</button>
+        <button class="menu-danger" onmousedown={preventBlur} onclick={deleteSelectedTableColumns}>{t("table.deleteSelectedColumns")}</button>
         <button class="menu-danger" onmousedown={preventBlur} onclick={deleteSelectedTableRowsAndColumns}>{t("table.deleteSelectedRowsAndColumns")}</button>
       </div>
     {/if}
