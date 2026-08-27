@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,8 @@ func TestNewerVersion(t *testing.T) {
 		want            bool
 	}{
 		{"v1.5", "1.5", false},
+		{"v1.7.7", "1.7.7", false},
+		{"1.7.7", "v1.7.7", false},
 		{"v1.6", "1.5", true},
 		{"1.10", "1.9", true},
 		{"2.0", "1.99.99", true},
@@ -27,6 +30,39 @@ func TestNewerVersion(t *testing.T) {
 	for _, tt := range tests {
 		if got := newerVersion(tt.remote, tt.current); got != tt.want {
 			t.Errorf("newerVersion(%q, %q) = %v, want %v", tt.remote, tt.current, got, tt.want)
+		}
+	}
+}
+
+func TestConfiguredVersionsStayInSync(t *testing.T) {
+	readVersion := func(path string) string {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			Version string `json:"version"`
+			Info    struct {
+				ProductVersion string `json:"productVersion"`
+			} `json:"info"`
+		}
+		if err := json.Unmarshal(data, &doc); err != nil {
+			t.Fatal(err)
+		}
+		if doc.Version != "" {
+			return doc.Version
+		}
+		return doc.Info.ProductVersion
+	}
+
+	for path, version := range map[string]string{
+		"wails.json":                 readVersion("wails.json"),
+		"frontend/package.json":      readVersion("frontend/package.json"),
+		"frontend/package-lock.json": readVersion("frontend/package-lock.json"),
+	} {
+		if version != appVersion {
+			t.Errorf("%s version = %q, updater version = %q", path, version, appVersion)
 		}
 	}
 }

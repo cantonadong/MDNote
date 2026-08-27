@@ -691,10 +691,12 @@ class AppState {
 
   async createEntry(parentDir: string, name: string, isDir: boolean) {
     try {
-      await api.createEntry(parentDir, name, isDir);
+      const entry = await api.createEntry(parentDir, name, isDir);
       this.refreshTree();
+      return entry;
     } catch (e) {
       this.showToast(`${t("toast.createFailed")}: ${e}`);
+      return null;
     }
   }
 
@@ -716,7 +718,8 @@ class AppState {
     const trimmed = rawName.trim();
     if (!trimmed) return;
     const name = pending.isDir || /\.md$/i.test(trimmed) ? trimmed : `${trimmed}.md`;
-    await this.createEntry(pending.parentDir, name, pending.isDir);
+    const entry = await this.createEntry(pending.parentDir, name, pending.isDir);
+    if (entry && !pending.isDir) await this.openPath(entry.path);
   }
 
   // Page-link/file-link chips store a `path` attr (see links.ts — the

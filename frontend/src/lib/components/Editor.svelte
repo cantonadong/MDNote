@@ -40,6 +40,7 @@
   import { PageLink, FileLink, LinkClickHandler } from "$lib/editor/nodes/links";
   import { MdImage } from "$lib/editor/nodes/image";
   import { SlashTrigger } from "$lib/editor/nodes/slashTrigger";
+  import { ClipboardGetText, ClipboardSetText } from "$lib/wailsjs/wailsjs/runtime/runtime";
   import { FullwidthHeadingShortcut } from "$lib/editor/nodes/fullwidthShortcuts";
   import { CodeBlock } from "$lib/editor/nodes/codeBlock";
   import { Paragraph } from "$lib/editor/nodes/paragraph";
@@ -103,6 +104,7 @@
   // ⠿ drag handle, clicked rather than dragged) converts the current line
   // in place.
   let menuMode = $state<"add" | "actions">("add");
+  let formatMenuOpen = $state(false);
   let slashPos = $state({ top: 0, left: 0 });
   // Icon name for the "+" handle: null (generic plus) for a plain paragraph,
   // or the matching blockTypes icon when the hovered/cursor block already
@@ -2237,6 +2239,26 @@
     const outer = editor.view.nodeDOM(pos) as HTMLElement | null;
     if (!outer) return null;
 
+    // Code blocks store line breaks as newline characters inside one text
+    // node, not as <br> elements. Derive the hovered visual row from the
+    // pre's real line-height so the shared left handle follows every code
+    // line instead of remaining pinned to the whole block's first row.
+    if (editor.state.doc.nodeAt(pos)?.type.name === "codeBlock") {
+      const pre = outer.matches("pre") ? outer : outer.querySelector("pre");
+      if (pre) {
+        const style = getComputedStyle(pre);
+        const lineHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.6;
+        const paddingTop = Number.parseFloat(style.paddingTop) || 0;
+        const rect = pre.getBoundingClientRect();
+        const lineCount = Math.max(1, (editor.state.doc.nodeAt(pos)?.textContent.match(/\n/g)?.length ?? 0) + 1);
+        const index = mouseY === null
+          ? 0
+          : Math.max(0, Math.min(lineCount - 1, Math.floor((mouseY - rect.top - paddingTop) / lineHeight)));
+        const top = rect.top + paddingTop + index * lineHeight;
+        return { top, bottom: top + lineHeight };
+      }
+    }
+
     // A table is one ProseMirror top-level node (effectiveBlockPos never
     // descends into it — see its own comment), but visually many rows —
     // without this, deepestLineContainer below stops at the tableWrapper
@@ -2641,7 +2663,10 @@
     const { from, to } = editor.state.selection;
     let tablePos: number | null = null;
     editor.state.doc.descendants((node, pos) => {
-      if (tablePos === null && node.type.name === "table" && from <= pos && to >= pos + node.nodeSize) {
+      // This special TSV path is only for copying the table block itself.
+      // A larger multi-block range may contain a complete table, but must
+      // retain the headings/lists/paragraphs around it.
+      if (tablePos === null && node.type.name === "table" && from === pos && to === pos + node.nodeSize) {
         tablePos = pos;
         return false;
       }
@@ -2685,14 +2710,32 @@
     // Cell selections and the whole-table block menu take different
     // ProseMirror selection paths. Cover both so Ctrl+C and both menu copy
     // buttons always expose an Excel-compatible TSV plain-text flavor.
-    const data = selectedTableClipboard() ?? wholeTableClipboard();
-    if (!data || !event.clipboardData) return;
+    if (!editor || (!multiSelectRange && editor.state.selection.empty) || !event.clipboardData) return;
+    // The blue block overlays are driven by multiSelectRange. Use that exact
+    // range instead of assuming ProseMirror's DOM/text selection still has
+    // identical endpoints after the user opens a block menu.
+    const blockSlice = multiSelectRange
+      ? editor.state.doc.slice(multiSelectRange.from, multiSelectRange.to)
+      : null;
+    const data = blockSlice ? null : selectedTableClipboard() ?? wholeTableClipboard();
     event.preventDefault();
-    event.clipboardData.setData("text/plain", data.text);
-    // External rich-text inputs (notably ChatGPT) prefer text/html and then
-    // squeeze the table into their composer. Expose TSV to other apps, while
-    // retaining rich table data in an MDNote-only clipboard flavor.
-    event.clipboardData.setData("application/x-mdnote-table", data.html);
+    if (data) {
+      event.clipboardData.setData("text/plain", data.text);
+      // External rich-text inputs (notably ChatGPT) prefer text/html and then
+      // squeeze the table into their composer. Expose TSV to other apps, while
+      // retaining rich table data in an MDNote-only clipboard flavor.
+      event.clipboardData.setData("application/x-mdnote-table", data.html);
+    } else {
+      // Chromium's default copy can silently leave the system clipboard
+      // unchanged for a ProseMirror selection created immediately before
+      // execCommand (notably whole blocks and margin-drag multi-selections).
+      // Serialize and populate both representations synchronously while the
+      // trusted copy event is active instead of relying on that default path.
+      const serialized = editor.view.serializeForClipboard(blockSlice ?? editor.state.selection.content());
+      event.clipboardData.setData("text/plain", serialized.text);
+      event.clipboardData.setData("text/html", serialized.dom.innerHTML);
+    }
+    appState.showToast(t("block.copied"));
   }
 
   async function copySelectedTableCells() {
@@ -2701,7 +2744,10 @@
     const copied = document.execCommand("copy");
     if (!copied) {
       const data = selectedTableClipboard();
-      if (data) await navigator.clipboard.writeText(data.text);
+      if (data) {
+        await navigator.clipboard.writeText(data.text);
+        appState.showToast(t("block.copied"));
+      }
     }
   }
 
@@ -3254,20 +3300,10 @@
       } else {
         dragSource = null;
         dropTargetPos = null;
-        const clickedNode = editor!.state.doc.nodeAt(pos!);
         selectedBlockRect = blockRectAt(pos!);
-        if (clickedNode && clickedNode.type.name === "table") {
-          openTableHeaderMenu(e, pos!, clickedNode);
-        } else if (clickedNode && clickedNode.type.name === "mdImage") {
-          const figure = editor!.view.nodeDOM(pos!) as HTMLElement | null;
-          if (figure) showImageMenuForFigure(figure, pos!, clickedNode);
-        } else {
-          // Plain click, no drag: opens the same menu as the "+" handle, but
-          // in "change" mode — always converts the current line in place
-          // (per-item for a list line, via insertBlock's listContext handling)
-          // regardless of whether it has content.
-          toggleMenu("actions");
-        }
+        // The left handle always exposes the same generic actions. Tables
+        // and images keep their specialised controls inside the content.
+        toggleMenu("actions");
       }
     }
 
@@ -3758,7 +3794,7 @@
     const listContext = listContextAt(pos);
     const currentFormatKey = blockTypeKeyFor(node, listContext?.listNode.type.name);
     const blockEnd = pos + node.nodeSize;
-    const wantsConvert = false;
+    const wantsConvert = menuMode === "actions";
 
     let effectiveKey = key;
     let extra: LinkPick | undefined;
@@ -3817,7 +3853,34 @@
   // and rich HTML describe the complete block (marks, links and structure),
   // rather than reducing it to node.textContent. The previous selection is
   // restored immediately after the synchronous copy event has fired.
-  function copyBlockAt(pos: number, e: MouseEvent) {
+  async function copyEditorSelection(): Promise<boolean> {
+    if (!editor || (!multiSelectRange && editor.state.selection.empty)) return false;
+    const blockSlice = multiSelectRange
+      ? editor.state.doc.slice(multiSelectRange.from, multiSelectRange.to)
+      : null;
+    const tableData = blockSlice ? null : selectedTableClipboard() ?? wholeTableClipboard();
+    const expectedText = tableData?.text
+      ?? editor.view.serializeForClipboard(blockSlice ?? editor.state.selection.content()).text;
+    const copied = document.execCommand("copy");
+
+    // WebView2 can report success from execCommand even though the system
+    // clipboard was not updated. Verify through Wails and use its native
+    // clipboard bridge as a dependable plain-text fallback. When the native
+    // copy did work, its rich HTML representation is left intact.
+    try {
+      if ((await ClipboardGetText()) === expectedText) return true;
+      return await ClipboardSetText(expectedText);
+    } catch {
+      try {
+        await navigator.clipboard.writeText(expectedText);
+        return true;
+      } catch {
+        return copied;
+      }
+    }
+  }
+
+  async function copyBlockAt(pos: number, e: MouseEvent) {
     e.stopPropagation();
     if (!editor) return;
     const node = editor.state.doc.nodeAt(pos);
@@ -3826,18 +3889,112 @@
     const selection = TextSelection.create(editor.state.doc, pos, pos + node.nodeSize);
     editor.view.dispatch(editor.state.tr.setSelection(selection));
     editor.view.focus();
-    const copied = document.execCommand("copy");
+    const copied = await copyEditorSelection();
     editor.view.dispatch(editor.state.tr.setSelection(previousSelection));
     menuOpen = false;
     tableHeaderMenu = null;
     imageMenu = null;
     selectedBlockRect = null;
-    if (!copied) appState.showToast(t("block.copyFailed"));
+    appState.showToast(t(copied ? "block.copied" : "block.copyFailed"));
   }
 
-  function copyHandleBlock(e: MouseEvent) {
+  async function copyHandleBlock(e: MouseEvent) {
+    e.stopPropagation();
+    if (!editor) return;
+    // A text or margin-drag selection is already the user's explicit copy
+    // target. Do not replace it with the single block under the handle.
+    if (multiSelectRange || !editor.state.selection.empty) {
+      const copied = await copyEditorSelection();
+      menuOpen = false;
+      selectedBlockRect = null;
+      appState.showToast(t(copied ? "block.copied" : "block.copyFailed"));
+      return;
+    }
     const pos = hoverBlockPos ?? topLevelBlockPos();
     if (pos !== null) copyBlockAt(pos, e);
+  }
+
+  function handleCodeBlockPos(): number | null {
+    if (!editor) return null;
+    const pos = hoverBlockPos ?? topLevelBlockPos();
+    return pos !== null && editor.state.doc.nodeAt(pos)?.type.name === "codeBlock" ? pos : null;
+  }
+
+  function clearHandleCodeBlock(e: MouseEvent) {
+    e.stopPropagation();
+    if (!editor) return;
+    const pos = handleCodeBlockPos();
+    if (pos === null) return;
+    const node = editor.state.doc.nodeAt(pos);
+    if (!node) return;
+    editor.view.dispatch(editor.state.tr.delete(pos + 1, pos + node.nodeSize - 1));
+    menuOpen = false;
+    editor.commands.focus(pos + 1);
+  }
+
+  function deleteHandleCodeBlock(e: MouseEvent) {
+    e.stopPropagation();
+    if (!editor) return;
+    const pos = handleCodeBlockPos();
+    if (pos === null) return;
+    const node = editor.state.doc.nodeAt(pos);
+    if (!node) return;
+    editor.view.dispatch(editor.state.tr.delete(pos, pos + node.nodeSize).scrollIntoView());
+    menuOpen = false;
+    selectedBlockRect = null;
+    hoverBlockPos = null;
+    updateHandle();
+  }
+
+  function deleteHandleBlock(e: MouseEvent) {
+    e.stopPropagation();
+    if (!editor) return;
+    if (multiSelectRange) {
+      const { from, to } = multiSelectRange;
+      clearMultiSelect();
+      editor.view.dispatch(editor.state.tr.delete(from, to).scrollIntoView());
+    } else {
+      const pos = hoverBlockPos ?? topLevelBlockPos();
+      if (pos === null) return;
+      const node = editor.state.doc.nodeAt(pos);
+      if (!node) return;
+      const listContext = listContextAt(pos);
+      const from = listContext && listContext.listNode.childCount === 1 ? listContext.listPos : pos;
+      const to = listContext && listContext.listNode.childCount === 1
+        ? listContext.listPos + listContext.listNode.nodeSize
+        : pos + node.nodeSize;
+      editor.view.dispatch(editor.state.tr.delete(from, to).scrollIntoView());
+    }
+    menuOpen = false;
+    formatMenuOpen = false;
+    selectedBlockRect = null;
+    hoverBlockPos = null;
+    updateHandle();
+  }
+
+  function clearHandleBlockFormatting(e: MouseEvent) {
+    e.stopPropagation();
+    if (!editor) return;
+    const pos = hoverBlockPos ?? topLevelBlockPos();
+    if (pos === null) return;
+    const node = editor.state.doc.nodeAt(pos);
+    if (!node) return;
+    const text = node.textBetween(0, node.content.size, "\n");
+    const paragraph = {
+      type: "paragraph",
+      content: text ? [{ type: "text", text }] : [],
+    };
+    const listContext = listContextAt(pos);
+    if (listContext) {
+      convertListItem(listContext, paragraph);
+    } else {
+      editor.chain().focus().insertContentAt({ from: pos, to: pos + node.nodeSize }, paragraph).run();
+      placeCursorNear(pos);
+    }
+    menuOpen = false;
+    formatMenuOpen = false;
+    selectedBlockRect = null;
+    updateHandle();
   }
 
   // Slash menu: replaces the current (empty, trigger-only) row in place —
@@ -3881,11 +4038,13 @@
   function toggleMenu(mode: "add" | "actions" = "add") {
     menuOpen = !menuOpen;
     menuMode = mode;
+    formatMenuOpen = false;
     if (menuOpen) slashMenuState.close();
   }
 
   function closeMenu() {
     menuOpen = false;
+    formatMenuOpen = false;
   }
 
   // Buttons that live outside the contenteditable region blur the editor on
@@ -4176,6 +4335,36 @@
             <button onmousedown={preventBlur} onclick={copyHandleBlock}>
               <span class="menu-symbol">⧉</span>
               <span>{t("block.copy")}</span>
+            </button>
+            <div
+              class="format-menu-entry"
+              role="presentation"
+              onmouseenter={() => (formatMenuOpen = true)}
+              onmouseleave={() => (formatMenuOpen = false)}
+            >
+              <button onmousedown={preventBlur}>
+                <Icon name="text" size={14} />
+                <span>{t("block.changeFormat")}</span>
+                <span class="submenu-arrow">›</span>
+              </button>
+              {#if formatMenuOpen}
+                <div class="block-menu block-format-submenu">
+                  {#each blockTypes as bt (bt.key)}
+                    <button onmousedown={preventBlur} onclick={() => insertBlock(bt.key)}>
+                      <Icon name={bt.icon} size={14} />
+                      <span>{bt.label}</span>
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+            <button onmousedown={preventBlur} onclick={clearHandleBlockFormatting}>
+              <Icon name="eraser" size={14} />
+              <span>{t("block.clearFormat")}</span>
+            </button>
+            <button class="menu-danger" onmousedown={preventBlur} onclick={deleteHandleBlock}>
+              <Icon name="trash" size={14} />
+              <span>{t("block.delete")}</span>
             </button>
           {:else}
             {#each blockTypes as bt (bt.key)}
@@ -4820,6 +5009,27 @@
   .slash-menu {
     left: unset;
   }
+  .handle-action-menu {
+    overflow: visible;
+  }
+  .format-menu-entry {
+    position: relative;
+  }
+  .format-menu-entry > button {
+    width: 100%;
+  }
+  .submenu-arrow {
+    margin-left: auto;
+    color: var(--text-secondary);
+    font-size: 17px;
+    line-height: 1;
+  }
+  .block-format-submenu {
+    top: -4px;
+    left: 100%;
+    max-height: 320px;
+    overflow-y: auto;
+  }
   .slash-empty {
     padding: 8px 10px;
     font-size: 12.5px;
@@ -5006,6 +5216,20 @@
   .editor-content-col :global(.tiptap .code-block-shell pre) {
     margin: 0;
     padding-bottom: 40px;
+  }
+  .editor-content-col :global(.tiptap .code-block-shell code) {
+    tab-size: 2;
+    -moz-tab-size: 2;
+  }
+  /* Chromium paints a multi-line selection in <pre> as adjacent fragments.
+     With its native translucent highlight, shared fragment edges (and the
+     span boundaries produced by lowlight) can be composited twice, leaving
+     dark horizontal/vertical seams. An opaque, shared selection colour makes
+     overlapping fragments visually identical while preserving selection. */
+  .editor-content-col :global(.tiptap .code-block-shell code::selection),
+  .editor-content-col :global(.tiptap .code-block-shell code *::selection) {
+    color: #fff;
+    background: #376bce;
   }
   .editor-content-col :global(.tiptap .code-language-select) {
     position: absolute;

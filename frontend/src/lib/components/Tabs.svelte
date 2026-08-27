@@ -8,9 +8,15 @@
   let {
     foregroundMode = false,
     onToggleForeground,
-  }: { foregroundMode?: boolean; onToggleForeground: () => void } = $props();
+    onForegroundPointerDown,
+  }: {
+    foregroundMode?: boolean;
+    onToggleForeground: () => void;
+    onForegroundPointerDown?: (event: PointerEvent) => void;
+  } = $props();
 
   let scrollEl: HTMLDivElement;
+  let canScrollRight = $state(false);
   let draggingId: string | null = $state(null);
   let dragOverId: string | null = $state(null);
   let dragOverEnd = $state(false);
@@ -88,6 +94,12 @@
     if (scrollEl.scrollWidth <= scrollEl.clientWidth) return;
     e.preventDefault();
     scrollEl.scrollLeft += e.deltaY + e.deltaX;
+    requestAnimationFrame(syncOverflowIndicator);
+  }
+
+  function syncOverflowIndicator() {
+    if (!scrollEl) return;
+    canScrollRight = scrollEl.scrollLeft + scrollEl.clientWidth < scrollEl.scrollWidth - 1;
   }
 
   function onDragStart(e: DragEvent, tab: Tab) {
@@ -187,18 +199,37 @@
       ? t("settings.tabTitle")
       : stripMdExt(appState.tabs.find((tab) => tab.id === appState.activeTabId)?.title ?? ""),
   );
+
+  // Opening/creating a tab can place it beyond the currently visible part
+  // of the horizontal strip. Always bring the newly active tab on screen.
+  $effect(() => {
+    const activeId = appState.activeTabId;
+    if (!activeId || !scrollEl) return;
+    tick().then(() => {
+      const active = scrollEl.querySelector<HTMLElement>(`.tab[data-tab-id="${CSS.escape(activeId)}"]`);
+      active?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+  });
+
+  $effect(() => {
+    appState.tabs.length;
+    appState.settingsOpen;
+    foregroundMode;
+    tick().then(syncOverflowIndicator);
+  });
 </script>
 
-<svelte:window onclick={menuTab ? closeMenu : undefined} />
+<svelte:window onclick={menuTab ? closeMenu : undefined} onresize={syncOverflowIndicator} />
 
-<div class="tabs" class:foreground-mode={foregroundMode}>
-  <div class="tabs-scroll" bind:this={scrollEl} onwheel={onWheel}>
+<div class="tabs" class:foreground-mode={foregroundMode} onpointerdown={onForegroundPointerDown} role="presentation">
+  <div class="tabs-scroll" bind:this={scrollEl} onwheel={onWheel} onscroll={syncOverflowIndicator}>
     {#each appState.tabs as tab (tab.id)}
       <div
         class="tab"
         class:active={tab.id === appState.activeTabId && !appState.settingsActive}
         class:foreground-hidden={foregroundMode}
         class:drag-over={dragOverId === tab.id}
+        data-tab-id={tab.id}
         draggable={renamingId !== tab.id}
         onclick={() => select(tab)}
         onmousedown={(e) => onMouseDown(e, tab)}
@@ -271,6 +302,9 @@
   </div>
   {#if foregroundMode}
     <div class="foreground-title">{foregroundTitle}</div>
+  {/if}
+  {#if canScrollRight && !foregroundMode}
+    <span class="tabs-overflow-indicator" aria-hidden="true"></span>
   {/if}
   <button
     class="new-tab-btn"
@@ -459,14 +493,28 @@
     display: none;
   }
   .tabs.foreground-mode {
-    --wails-draggable: drag;
-    -webkit-app-region: drag;
+    /* Foreground mode uses pointer-driven movement in +page.svelte. Native
+       draggable regions stop WebView pointer delivery at the window edge,
+       which conflicts with the custom clipped-window resize handles. */
+    --wails-draggable: no-drag;
+    -webkit-app-region: no-drag;
+    cursor: move;
+  }
+  .tabs-overflow-indicator {
+    width: 2px;
+    height: 22px;
+    margin-left: 2px;
+    border-radius: 1px;
+    background: var(--accent);
+    flex-shrink: 0;
+    pointer-events: none;
   }
   .tabs.foreground-mode .tab,
   .tabs.foreground-mode .new-tab-btn,
   .tabs.foreground-mode .foreground-btn {
     --wails-draggable: no-drag;
     -webkit-app-region: no-drag;
+    cursor: pointer;
   }
   .foreground-title {
     position: absolute;

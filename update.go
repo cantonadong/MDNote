@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -22,7 +23,7 @@ import (
 )
 
 const (
-	appVersion       = "1.7.6"
+	appVersion       = "1.7.8"
 	latestReleaseURL = "https://api.github.com/repos/cantonadong/MDNote/releases/latest"
 	updateAssetName  = "MDNote.exe"
 )
@@ -102,6 +103,19 @@ func newerVersion(remote, current string) bool {
 	return false
 }
 
+// dirtyGitWorktree reports whether startDir belongs to a Git worktree with
+// tracked or untracked changes. Packaged installations normally are not Git
+// worktrees, so this only protects locally-built development executables from
+// replacing themselves with a release while source changes are still local.
+// A missing Git executable or a non-worktree directory is not an error and
+// must not disable updates for normal users.
+func dirtyGitWorktree(startDir string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", startDir, "status", "--porcelain").Output()
+	return err == nil && len(bytes.TrimSpace(out)) > 0
+}
+
 func (a *App) getUpdateStatus() UpdateStatus {
 	a.updateMu.Lock()
 	defer a.updateMu.Unlock()
@@ -119,6 +133,13 @@ func (a *App) setUpdateReady(version string) {
 }
 
 func (a *App) checkForUpdatesDaily(ctx context.Context) {
+	// Never let a locally-built executable inside a dirty repository replace
+	// itself with a GitHub release. This check happens before the daily marker
+	// is written so updating becomes available again after the work is saved.
+	if exe, err := os.Executable(); err == nil && dirtyGitWorktree(filepath.Dir(exe)) {
+		return
+	}
+
 	today := time.Now().Format("2006-01-02")
 	s, err := loadSettings()
 	if err != nil || s.LastUpdateCheckDate == today {

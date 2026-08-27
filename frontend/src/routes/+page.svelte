@@ -34,11 +34,56 @@
 
   type ResizeDirection = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
+  async function beginForegroundMove(event: PointerEvent) {
+    if (!foregroundMode || event.button !== 0) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("button, input, select, .tab")) return;
+    event.preventDefault();
+    const captureTarget = event.currentTarget as HTMLElement | null;
+    captureTarget?.setPointerCapture?.(event.pointerId);
+    const moveEpoch = foregroundEpoch;
+    const startX = event.screenX;
+    const startY = event.screenY;
+    const scale = window.devicePixelRatio || 1;
+    const startPosition = await api.getWindowPosition();
+    let latestX = startX;
+    let latestY = startY;
+    let frame = 0;
+
+    const apply = () => {
+      frame = 0;
+      if (!foregroundMode || moveEpoch !== foregroundEpoch) return;
+      api.setWindowPosition(
+        Math.round(startPosition.x + (latestX - startX) * scale),
+        Math.round(startPosition.y + (latestY - startY) * scale),
+      );
+    };
+    const move = (e: PointerEvent) => {
+      latestX = e.screenX;
+      latestY = e.screenY;
+      if (!frame) frame = requestAnimationFrame(apply);
+    };
+    const finish = () => {
+      if (frame) {
+        cancelAnimationFrame(frame);
+        apply();
+      }
+      window.removeEventListener("pointermove", move, true);
+      window.removeEventListener("pointerup", finish, true);
+      window.removeEventListener("pointercancel", finish, true);
+    };
+    window.addEventListener("pointermove", move, true);
+    window.addEventListener("pointerup", finish, true);
+    window.addEventListener("pointercancel", finish, true);
+  }
+
   async function beginForegroundResize(event: PointerEvent, direction: ResizeDirection) {
     if (!foregroundMode || event.button !== 0) return;
     const resizeEpoch = foregroundEpoch;
     event.preventDefault();
     event.stopPropagation();
+    const captureTarget = event.currentTarget as HTMLElement | null;
+    captureTarget?.setPointerCapture?.(event.pointerId);
     const [startSize, startPosition] = await Promise.all([api.getWindowSize(), api.getWindowPosition()]);
     const startX = event.screenX;
     const startY = event.screenY;
@@ -166,7 +211,7 @@
 <div class="app-shell">
   <Sidebar bind:collapsed={sidebarCollapsed} {foregroundMode} />
   <div class="main-col">
-    <Tabs {foregroundMode} onToggleForeground={toggleForegroundMode} />
+    <Tabs {foregroundMode} onToggleForeground={toggleForegroundMode} onForegroundPointerDown={beginForegroundMove} />
     {#if appState.settingsActive}
       <SettingsPanel />
     {:else}
@@ -214,15 +259,15 @@
     flex-direction: column;
     height: 100%;
   }
-  .foreground-resize { position:absolute; z-index:3000; -webkit-app-region:no-drag; }
-  .foreground-resize-n { top:0; left:7px; right:7px; height:6px; cursor:n-resize; }
-  .foreground-resize-s { bottom:0; left:7px; right:7px; height:6px; cursor:s-resize; }
-  .foreground-resize-e { top:7px; right:0; bottom:7px; width:6px; cursor:e-resize; }
-  .foreground-resize-w { top:7px; left:0; bottom:7px; width:6px; cursor:w-resize; }
-  .foreground-resize-ne { top:0; right:0; width:9px; height:9px; cursor:ne-resize; }
-  .foreground-resize-nw { top:0; left:0; width:9px; height:9px; cursor:nw-resize; }
-  .foreground-resize-se { right:0; bottom:0; width:9px; height:9px; cursor:se-resize; }
-  .foreground-resize-sw { left:0; bottom:0; width:9px; height:9px; cursor:sw-resize; }
+  .foreground-resize { position:absolute; z-index:3000; pointer-events:auto; touch-action:none; --wails-draggable:no-drag; -webkit-app-region:no-drag; }
+  .foreground-resize-n { top:0; left:10px; right:10px; height:8px; cursor:n-resize; }
+  .foreground-resize-s { bottom:0; left:10px; right:10px; height:8px; cursor:s-resize; }
+  .foreground-resize-e { top:10px; right:0; bottom:10px; width:8px; cursor:e-resize; }
+  .foreground-resize-w { top:10px; left:0; bottom:10px; width:8px; cursor:w-resize; }
+  .foreground-resize-ne { top:0; right:0; width:12px; height:12px; cursor:ne-resize; }
+  .foreground-resize-nw { top:0; left:0; width:12px; height:12px; cursor:nw-resize; }
+  .foreground-resize-se { right:0; bottom:0; width:12px; height:12px; cursor:se-resize; }
+  .foreground-resize-sw { left:0; bottom:0; width:12px; height:12px; cursor:sw-resize; }
   /* Follows the pointer during a sidebar file/folder drag (see
      dragController.ts) — plain pointer-event dragging has no native drag
      image the way HTML5 DnD would, so without this the dragged item gives
