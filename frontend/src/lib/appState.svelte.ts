@@ -9,7 +9,12 @@ export interface Tab {
   path: string | null; // null = untitled tab, never saved
   title: string;
   content: string; // live editor content (markdown)
-  savedContent: string; // content as of last save/load, for dirty comparison
+  savedContent: string; // content as of last save/load
+  // Canonical ProseMirror document at the last load/save point. Markdown
+  // serialization is not byte-stable, so comparing content/savedContent can
+  // report a change after nothing more than moving the caret.
+  savedDocument: string | null;
+  dirty: boolean;
   missing: boolean; // backing file was deleted/moved outside the app
 }
 
@@ -80,7 +85,7 @@ function isImagePath(path: string): boolean {
 }
 
 function isDirty(tab: Tab): boolean {
-  return tab.content !== tab.savedContent;
+  return tab.dirty;
 }
 
 class AppState {
@@ -294,6 +299,8 @@ class AppState {
       title: t("tabs.untitled"),
       content: "",
       savedContent: "",
+      savedDocument: null,
+      dirty: false,
       missing: false,
     };
     this.tabs.push(tab);
@@ -356,6 +363,8 @@ class AppState {
         title: name,
         content,
         savedContent: content,
+        savedDocument: null,
+        dirty: false,
         missing: false,
       };
       if (opts.insertAfterActive) {
@@ -381,9 +390,24 @@ class AppState {
     }
   }
 
-  updateActiveContent(content: string) {
+  updateActiveContent(content: string, document?: string) {
     const tab = this.activeTab;
-    if (tab) tab.content = content;
+    if (!tab) return;
+    tab.content = content;
+    if (document !== undefined) {
+      // A newly loaded tab gets its canonical baseline after setContent has
+      // parsed it. Subsequent updates compare editor documents, not Markdown
+      // formatting, so selection/focus-only activity cannot make it dirty.
+      if (tab.savedDocument === null) tab.savedDocument = document;
+      tab.dirty = document !== tab.savedDocument;
+    }
+  }
+
+  ensureActiveDocumentBaseline(document: string) {
+    const tab = this.activeTab;
+    if (!tab || tab.savedDocument !== null) return;
+    tab.savedDocument = document;
+    tab.dirty = false;
   }
 
   private flushActiveEditorContent() {
@@ -412,6 +436,10 @@ class AppState {
     try {
       await api.writeFile(tab.path, tab.content);
       tab.savedContent = tab.content;
+      tab.dirty = false;
+      tab.savedDocument = tab.id === this.activeTabId && editorBridge.instance
+        ? JSON.stringify(editorBridge.instance.getJSON())
+        : null;
       return true;
     } catch (e) {
       this.showToast(`${t("toast.saveFailed")}: ${e}`);
@@ -428,6 +456,10 @@ class AppState {
       tab.path = path;
       tab.title = await api.basename(path);
       tab.savedContent = tab.content;
+      tab.dirty = false;
+      tab.savedDocument = tab.id === this.activeTabId && editorBridge.instance
+        ? JSON.stringify(editorBridge.instance.getJSON())
+        : null;
       tab.missing = false;
       this.refreshTree();
       return true;
@@ -774,12 +806,16 @@ class AppState {
           .writeFile(t.path, updated)
           .then(() => {
             t.savedContent = updated;
+            t.dirty = false;
+            t.savedDocument = null;
           })
           .catch(() => {
             /* best effort — in-memory content is still corrected either way */
           });
       } else {
         t.savedContent = updated;
+        t.dirty = false;
+        t.savedDocument = null;
       }
     }
   }

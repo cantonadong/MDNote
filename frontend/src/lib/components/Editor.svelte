@@ -42,6 +42,7 @@
   import { SlashTrigger } from "$lib/editor/nodes/slashTrigger";
   import { ClipboardGetText, ClipboardSetText } from "$lib/wailsjs/wailsjs/runtime/runtime";
   import { FullwidthHeadingShortcut } from "$lib/editor/nodes/fullwidthShortcuts";
+  import { AutoPairPunctuation } from "$lib/editor/nodes/autoPairPunctuation";
   import { CodeBlock } from "$lib/editor/nodes/codeBlock";
   import { Paragraph } from "$lib/editor/nodes/paragraph";
   import { slashMenuState } from "$lib/editor/slashMenu.svelte";
@@ -1630,7 +1631,7 @@
   function syncContentFromEditor() {
     if (!editor) return;
     const md = (editor.storage as any).markdown.getMarkdown();
-    appState.updateActiveContent(md);
+    appState.updateActiveContent(md, JSON.stringify(editor.getJSON()));
   }
 
   function syncFromEditor() {
@@ -4084,6 +4085,7 @@
         Paragraph,
         CodeBlock,
         FullwidthHeadingShortcut,
+        AutoPairPunctuation,
         Markdown.configure({ html: true, transformPastedText: true }),
         SearchHighlight,
         GrammarCheck,
@@ -4154,6 +4156,7 @@
         editor?.view.dom.querySelectorAll(".active-table-cell").forEach((el) => el.classList.remove("active-table-cell"));
       },
       onCreate: () => {
+        appState.ensureActiveDocumentBaseline(JSON.stringify(editor!.getJSON()));
         syncTableHeaderAttrs();
         syncActiveTableCell();
         queueTableWrapperSync();
@@ -4242,6 +4245,7 @@
     // after opening a file could wipe everything just typed.
     editor.chain().setMeta("addToHistory", false).setContent(tab?.content ?? "", { emitUpdate: false }).run();
     switching = false;
+    appState.ensureActiveDocumentBaseline(JSON.stringify(editor.getJSON()));
     refreshDerivedState();
     updateHandle();
     syncUndoRedo();
