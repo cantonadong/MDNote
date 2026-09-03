@@ -19,6 +19,8 @@ type PairMeta = {
   createdAt: number;
 };
 
+type PluginMeta = PairMeta | "clear";
+
 // Pair punctuation before Chromium mutates the contenteditable DOM. This is
 // deliberately a beforeinput handler rather than an appendTransaction hook:
 // Sogou can keep an IME composition alive and later rewrite its composition
@@ -34,7 +36,8 @@ export const AutoPairPunctuation = Extension.create({
         state: {
           init: () => null as PairMeta | null,
           apply(tr, pending: PairMeta | null) {
-            const meta = tr.getMeta(pluginKey) as PairMeta | undefined;
+            const meta = tr.getMeta(pluginKey) as PluginMeta | undefined;
+            if (meta === "clear") return null;
             if (meta?.kind === "paired") return meta;
             // Keep the marker through selection-only activity, but a real
             // document edit consumes it. appendTransaction still receives
@@ -62,6 +65,26 @@ export const AutoPairPunctuation = Extension.create({
               if (!closer || (typed !== opener && typed !== opener + closer)) return false;
 
               const { from, to } = view.state.selection;
+              const pending = pluginKey.getState(view.state) as PairMeta | null;
+              if (
+                event.inputType === "insertText" &&
+                pending &&
+                Date.now() - pending.createdAt < 5000 &&
+                pending.gap === from &&
+                from === to &&
+                pending.opener === opener &&
+                pending.closer === closer
+              ) {
+                // Sogou first inserts a non-cancelable composition opener;
+                // appendTransaction completes its pair. It then confirms the
+                // same keystroke with a cancelable insertText at the exact
+                // same gap. Consume that confirmation instead of treating it
+                // as a second, intentional pair.
+                event.preventDefault();
+                view.dispatch(view.state.tr.setMeta(pluginKey, "clear"));
+                return true;
+              }
+
               const tr = view.state.tr.insertText(opener + closer, from, to);
               tr.setSelection(TextSelection.create(tr.doc, from + opener.length));
               tr.setMeta(pluginKey, {
