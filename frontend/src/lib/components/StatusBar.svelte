@@ -2,12 +2,15 @@
   import { appState } from "$lib/appState.svelte";
   import { editorBridge } from "$lib/editor/bridge.svelte";
   import { t, i18n, formatSyncTime } from "$lib/i18n.svelte";
-  import Icon from "./Icon.svelte";
 
   let sync = $derived(appState.syncStatus);
+  let lightState = $derived(
+    sync.lastError ? "error" : sync.syncing || appState.hasUnsyncedChanges ? "pending" : sync.lastSyncTime ? "success" : "idle",
+  );
   let syncText = $derived.by(() => {
     if (sync.syncing) return t("statusbar.sync.syncing");
     if (sync.lastError) return t("statusbar.sync.failed");
+    if (appState.hasUnsyncedChanges) return t("statusbar.sync.pending");
     if (sync.lastSyncTime) {
       const time = formatSyncTime(sync.lastSyncTime, i18n.locale);
       return t("statusbar.sync.synced", { time });
@@ -19,10 +22,8 @@
 <div class="status-bar">
   <span>{appState.wordCount} {t("statusbar.words")}</span>
   {#if sync.enabled && sync.configured}
-    <span class="sync-indicator" class:error={!!sync.lastError && !sync.syncing} title={syncText}>
-      <span class="sync-icon" class:spin={sync.syncing}>
-        <Icon name={sync.syncing ? "refresh" : "cloud"} size={13} />
-      </span>
+    <span class="sync-indicator" role="status" title={sync.lastError || syncText}>
+      <span class="sync-light {lightState}" aria-hidden="true"></span>
       {syncText}
     </span>
   {/if}
@@ -33,6 +34,7 @@
 
 <style>
   .status-bar {
+    position: relative;
     height: 34px;
     flex-shrink: 0;
     display: flex;
@@ -59,6 +61,10 @@
     color: var(--text-primary);
   }
   .sync-indicator {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: 60%;
     display: flex;
     align-items: center;
     gap: 5px;
@@ -67,19 +73,20 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .sync-indicator.error {
-    color: #e03e3e;
-  }
-  .sync-icon {
-    display: inline-flex;
+  .sync-light {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-secondary);
     flex-shrink: 0;
   }
-  .sync-icon.spin {
-    animation: sync-spin 1s linear infinite;
+  .sync-light.success {
+    background: #22a559;
   }
-  @keyframes sync-spin {
-    to {
-      transform: rotate(360deg);
-    }
+  .sync-light.error {
+    background: #e03e3e;
+  }
+  .sync-light.pending {
+    background: #3b82f6;
   }
 </style>

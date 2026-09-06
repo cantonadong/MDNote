@@ -1,5 +1,7 @@
 import type { Editor } from "@tiptap/core";
 import type { Node as PMNode, Schema } from "@tiptap/pm/model";
+import { EditorState, type Transaction } from "@tiptap/pm/state";
+import { TableMap, addRow as addGridRow, addColumn as addGridColumn, removeRow as removeGridRow, removeColumn as removeGridColumn, moveTableRow, moveTableColumn } from "@tiptap/pm/tables";
 
 const INDEX_COLUMN_WIDTH = 40;
 const NEW_COLUMN_WIDTH = 200;
@@ -7,8 +9,24 @@ const NEW_COLUMN_WIDTH = 200;
 // Row/column add/delete/reorder for the Table extension, implemented by
 // rebuilding the whole table node and replacing it in one step rather than
 // computing insert/delete positions inside it — simpler to get right, and
-// safe here because our tables are always a uniform grid (no colspan/rowspan:
-// nothing in this app ever offers a "merge cells" UI).
+// Merged tables use ProseMirror's grid-aware operations to preserve spans.
+
+function hasMergedCells(table: PMNode): boolean {
+  let merged = false;
+  table.forEach(row => row.forEach(cell => {
+    if (cell.attrs.colspan > 1 || cell.attrs.rowspan > 1) merged = true;
+  }));
+  return merged;
+}
+
+function editGrid(tr: Transaction, ref: TableRef, operation: (...args: Parameters<typeof addGridRow>) => unknown, index: number) {
+  const table = tr.doc.nodeAt(ref.pos)!;
+  const map = TableMap.get(table);
+  // Each operation maps positions against its own starting document.
+  const stepTr = EditorState.create({ doc: tr.doc }).tr;
+  operation(stepTr, { table, map, tableStart: ref.pos + 1, left: 0, top: 0, right: map.width, bottom: map.height }, index);
+  for (const step of stepTr.steps) tr.step(step);
+}
 
 export interface TableRef {
   node: PMNode;
@@ -40,7 +58,7 @@ function indexOffset(table: PMNode): number {
 }
 
 export function colCount(table: PMNode): number {
-  const total = table.childCount > 0 ? table.child(0).childCount : 0;
+  const total = TableMap.get(table).width;
   return Math.max(0, total - indexOffset(table));
 }
 
@@ -71,6 +89,10 @@ export function deleteTable(editor: Editor, ref: TableRef) {
 // never turns resizable on) keeps a column's cells consistent, so nothing
 // downstream has to know only row 0 "really" matters.
 export function setColumnWidths(editor: Editor, ref: TableRef, widths: (number | null)[]) {
+  if (hasMergedCells(ref.node)) {
+    setPhysicalColumnWidths(editor, ref, ref.node.attrs.showIndexColumn ? [INDEX_COLUMN_WIDTH, ...widths] : widths);
+    return;
+  }
   const off = indexOffset(ref.node);
   const rows = rowsOf(ref.node).map((row) => {
     const cells: PMNode[] = [];
@@ -90,6 +112,18 @@ export function setColumnWidths(editor: Editor, ref: TableRef, widths: (number |
 }
 
 export function setPhysicalColumnWidths(editor: Editor, ref: TableRef, widths: (number | null)[]) {
+  if (hasMergedCells(ref.node)) {
+    const map = TableMap.get(ref.node);
+    const tr = editor.state.tr;
+    for (const pos of new Set(map.map)) {
+      const cell = ref.node.nodeAt(pos)!;
+      const left = map.findCell(pos).left;
+      const colwidth = Array.from({ length: cell.attrs.colspan }, (_, i) => widths[left + i] || 0);
+      tr.setNodeMarkup(ref.pos + 1 + pos, undefined, { ...cell.attrs, colwidth: colwidth.some(Boolean) ? colwidth : null });
+    }
+    editor.view.dispatch(tr);
+    return;
+  }
   const rows = rowsOf(ref.node).map((row) => {
     const cells: PMNode[] = [];
     for (let c = 0; c < row.childCount; c++) {
@@ -117,7 +151,7 @@ export function setShowIndexColumn(editor: Editor, ref: TableRef, show: boolean)
     const cells: PMNode[] = [];
     for (let c = 0; c < row.childCount; c++) cells.push(row.child(c));
     if (show) {
-      const kind = row.child(0)?.type.name === "tableHeader" ? editor.state.schema.nodes.tableHeader : editor.state.schema.nodes.tableCell;
+      const kind = row.firstChild?.type.name === "tableHeader" ? editor.state.schema.nodes.tableHeader : editor.state.schema.nodes.tableCell;
       const filled = kind.createAndFill();
       if (filled) cells.unshift(kind.create({ ...filled.attrs, colwidth: [INDEX_COLUMN_WIDTH] }, filled.content, filled.marks));
     } else {
@@ -168,8 +202,9 @@ function isRowEmpty(row: PMNode, table: PMNode): boolean {
 
 function isColumnEmpty(table: PMNode, colIndex: number): boolean {
   const off = indexOffset(table);
+  const map = TableMap.get(table);
   for (let r = 0; r < table.childCount; r++) {
-    const cell = table.child(r).child(colIndex + off);
+    const cell = table.nodeAt(map.map[r * map.width + colIndex + off]);
     if (cell && !isCellEmpty(cell)) return false;
   }
   return true;
@@ -181,6 +216,16 @@ function isColumnEmpty(table: PMNode, colIndex: number): boolean {
 // user can only shrink a table back down through cells they already
 // emptied out (undo-able content loss, never silent data loss).
 export function trailingEmptyRowCount(table: PMNode): number {
+  if (hasMergedCells(table)) {
+    const map = TableMap.get(table);
+    let count = 0;
+    for (let row = map.height - 1; row >= 0; row--) {
+      const positions = map.map.slice(row * map.width + indexOffset(table), (row + 1) * map.width);
+      if (positions.some(pos => !isCellEmpty(table.nodeAt(pos)!))) break;
+      count++;
+    }
+    return count;
+  }
   const rows = rowsOf(table);
   let n = 0;
   for (let i = rows.length - 1; i >= 0; i--) {
@@ -201,6 +246,7 @@ export function trailingEmptyColumnCount(table: PMNode): number {
 }
 
 export function addRow(editor: Editor, ref: TableRef, atIndex: number) {
+  if (hasMergedCells(ref.node)) { addRows(editor, ref, atIndex, 1); return; }
   const { schema } = editor.state;
   const totalCols = colCount(ref.node) + indexOffset(ref.node);
   const rows = rowsOf(ref.node);
@@ -224,6 +270,13 @@ export function addRow(editor: Editor, ref: TableRef, atIndex: number) {
 // gesture that could delete content by accident). Keeps at least one row,
 // and re-promotes the new row 0 to a header row if the old one was removed.
 export function deleteRow(editor: Editor, ref: TableRef, index: number) {
+  if (hasMergedCells(ref.node)) {
+    if (rowCount(ref.node) <= 1) return;
+    const tr = editor.state.tr;
+    editGrid(tr, ref, removeGridRow, index);
+    editor.view.dispatch(tr);
+    return;
+  }
   const rows = rowsOf(ref.node);
   if (rows.length <= 1) return;
   rows.splice(index, 1);
@@ -236,6 +289,12 @@ export function deleteRow(editor: Editor, ref: TableRef, index: number) {
 // transaction (one replaceTable call) so it's also one undo step, not N.
 export function addRows(editor: Editor, ref: TableRef, atIndex: number, count: number) {
   if (count <= 0) return;
+  if (hasMergedCells(ref.node)) {
+    const tr = editor.state.tr;
+    for (let i = 0; i < count; i++) editGrid(tr, ref, addGridRow, atIndex + i);
+    editor.view.dispatch(tr);
+    return;
+  }
   const { schema } = editor.state;
   const totalCols = colCount(ref.node) + indexOffset(ref.node);
   const rows = rowsOf(ref.node);
@@ -256,12 +315,22 @@ export function removeRows(editor: Editor, ref: TableRef, fromIndex: number, cou
   const rows = rowsOf(ref.node);
   const removable = Math.min(count, rows.length - 1, rows.length - fromIndex, trailingEmptyRowCount(ref.node));
   if (removable <= 0) return;
+  if (hasMergedCells(ref.node)) {
+    const tr = editor.state.tr;
+    for (let i = fromIndex + removable - 1; i >= fromIndex; i--) editGrid(tr, ref, removeGridRow, i);
+    editor.view.dispatch(tr);
+    return;
+  }
   rows.splice(fromIndex, removable);
   replaceTable(editor, ref, rows);
 }
 
 export function moveRow(editor: Editor, ref: TableRef, fromIndex: number, toIndex: number) {
   if (fromIndex === toIndex) return;
+  if (hasMergedCells(ref.node)) {
+    moveTableRow({ from: fromIndex, to: toIndex, pos: ref.pos + 1, select: false })(editor.state, editor.view.dispatch);
+    return;
+  }
   const rows = rowsOf(ref.node);
   const [moved] = rows.splice(fromIndex, 1);
   rows.splice(toIndex, 0, moved);
@@ -269,6 +338,7 @@ export function moveRow(editor: Editor, ref: TableRef, fromIndex: number, toInde
 }
 
 export function addColumn(editor: Editor, ref: TableRef, atIndex: number) {
+  if (hasMergedCells(ref.node)) { addColumns(editor, ref, atIndex, 1); return; }
   const { schema } = editor.state;
   const off = indexOffset(ref.node);
   const rows = rowsOf(ref.node).map((row) => {
@@ -289,6 +359,12 @@ export function addColumn(editor: Editor, ref: TableRef, atIndex: number) {
 // removeRows above for why this needs to be one transaction, not N.
 export function addColumns(editor: Editor, ref: TableRef, atIndex: number, count: number) {
   if (count <= 0) return;
+  if (hasMergedCells(ref.node)) {
+    const tr = editor.state.tr;
+    for (let i = 0; i < count; i++) editGrid(tr, ref, addGridColumn, atIndex + indexOffset(ref.node) + i);
+    editor.view.dispatch(tr);
+    return;
+  }
   const { schema } = editor.state;
   const off = indexOffset(ref.node);
   const rows = rowsOf(ref.node).map((row) => {
@@ -307,6 +383,21 @@ export function addColumns(editor: Editor, ref: TableRef, atIndex: number, count
 }
 
 export function addCheckboxColumn(editor: Editor, ref: TableRef) {
+  if (hasMergedCells(ref.node)) {
+    const tr = editor.state.tr;
+    editGrid(tr, ref, addGridColumn, TableMap.get(ref.node).width);
+    const table = tr.doc.nodeAt(ref.pos)!;
+    const map = TableMap.get(table);
+    const positions = new Set(Array.from({ length: map.height }, (_, row) => map.map[(row + 1) * map.width - 1]));
+    for (const pos of [...positions].sort((a, b) => b - a)) {
+      const cell = table.nodeAt(pos)!;
+      const { schema } = editor.state;
+      const content = schema.nodes.taskList.create(null, schema.nodes.taskItem.create({ checked: false }, schema.nodes.paragraph.create()));
+      tr.replaceWith(ref.pos + 1 + pos, ref.pos + 1 + pos + cell.nodeSize, cell.type.create({ ...cell.attrs, colwidth: [NEW_COLUMN_WIDTH] }, content));
+    }
+    editor.view.dispatch(tr);
+    return;
+  }
   const { schema } = editor.state;
   const off = indexOffset(ref.node);
   const lastLogical = colCount(ref.node) - 1;
@@ -330,6 +421,12 @@ export function addCheckboxColumn(editor: Editor, ref: TableRef) {
 // this isn't restricted to already-empty columns the way removeColumns is.
 export function deleteColumn(editor: Editor, ref: TableRef, index: number) {
   if (colCount(ref.node) <= 1) return;
+  if (hasMergedCells(ref.node)) {
+    const tr = editor.state.tr;
+    editGrid(tr, ref, removeGridColumn, index + indexOffset(ref.node));
+    editor.view.dispatch(tr);
+    return;
+  }
   const off = indexOffset(ref.node);
   const rows = rowsOf(ref.node).map((row) => {
     const cells: PMNode[] = [];
@@ -351,10 +448,20 @@ export function deleteSelectedRowsAndColumns(
   colTo: number,
 ) {
   const remainingRowCount = ref.node.childCount - (rowTo - rowFrom);
-  const physicalCols = ref.node.firstChild?.childCount ?? 0;
+  const physicalCols = TableMap.get(ref.node).width;
   const remainingColCount = physicalCols - (colTo - colFrom);
   if (remainingRowCount <= 0 || remainingColCount <= 0) {
     deleteTable(editor, ref);
+    return;
+  }
+  if (hasMergedCells(ref.node)) {
+    const tr = editor.state.tr;
+    for (let row = rowTo - 1; row >= rowFrom; row--) editGrid(tr, ref, removeGridRow, row);
+    for (let col = colTo - 1; col >= colFrom; col--) editGrid(tr, ref, removeGridColumn, col);
+    if (ref.node.attrs.showIndexColumn && colFrom === 0 && colTo > 0) {
+      tr.setNodeMarkup(ref.pos, undefined, { ...ref.node.attrs, showIndexColumn: false });
+    }
+    editor.view.dispatch(tr);
     return;
   }
   const rows = rowsOf(ref.node)
@@ -377,6 +484,12 @@ export function removeColumns(editor: Editor, ref: TableRef, fromIndex: number, 
   const total = colCount(ref.node);
   const removable = Math.min(count, total - 1, total - fromIndex, trailingEmptyColumnCount(ref.node));
   if (removable <= 0) return;
+  if (hasMergedCells(ref.node)) {
+    const tr = editor.state.tr;
+    for (let i = fromIndex + removable - 1; i >= fromIndex; i--) editGrid(tr, ref, removeGridColumn, i + indexOffset(ref.node));
+    editor.view.dispatch(tr);
+    return;
+  }
   const off = indexOffset(ref.node);
   const rows = rowsOf(ref.node).map((row) => {
     const cells: PMNode[] = [];
@@ -389,6 +502,10 @@ export function removeColumns(editor: Editor, ref: TableRef, fromIndex: number, 
 
 export function moveColumn(editor: Editor, ref: TableRef, fromIndex: number, toIndex: number) {
   if (fromIndex === toIndex) return;
+  if (hasMergedCells(ref.node)) {
+    moveTableColumn({ from: fromIndex + indexOffset(ref.node), to: toIndex + indexOffset(ref.node), pos: ref.pos + 1, select: false })(editor.state, editor.view.dispatch);
+    return;
+  }
   const off = indexOffset(ref.node);
   const rows = rowsOf(ref.node).map((row) => {
     const cells: PMNode[] = [];

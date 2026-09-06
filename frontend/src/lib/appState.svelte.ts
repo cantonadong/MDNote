@@ -153,6 +153,16 @@ class AppState {
   dragGhost = $state<DragGhost | null>(null);
   pendingExpandPath = $state<string | null>(null);
   private openTabsSaveQueue: Promise<void> = Promise.resolve();
+  private saveSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  private saveSyncPending = false;
+  private localSyncRevision = $state(0);
+  private syncedLocalRevision = $state(0);
+  private syncStartRevision = 0;
+  private syncRequests = 0;
+
+  get hasUnsyncedChanges(): boolean {
+    return this.localSyncRevision !== this.syncedLocalRevision || this.tabs.some(isDirty);
+  }
 
   get activeTab(): Tab | null {
     return this.tabs.find((t) => t.id === this.activeTabId) ?? null;
@@ -176,7 +186,15 @@ class AppState {
     const initialFile = await api.getInitialFile();
     this.syncStatus = await api.getSyncStatus();
     api.onSyncStatus((status) => {
+      if (status.syncing) {
+        this.syncStartRevision = this.localSyncRevision;
+      } else if (!status.lastError && status.lastSyncTime) {
+        this.syncedLocalRevision = this.syncStartRevision;
+      } else if (status.lastError && this.syncRequests === 0) {
+        this.showToast(`${t("settings.sync.syncFailed")}: ${status.lastError}`);
+      }
       this.syncStatus = status;
+      if (!status.syncing) this.runPendingSaveSync();
     });
     this.updateStatus = await api.getUpdateStatus();
     api.onUpdateStatus((status) => {
@@ -435,6 +453,7 @@ class AppState {
     }
     try {
       await api.writeFile(tab.path, tab.content);
+      this.scheduleSaveSync();
       tab.savedContent = tab.content;
       tab.dirty = false;
       tab.savedDocument = tab.id === this.activeTabId && editorBridge.instance
@@ -453,6 +472,7 @@ class AppState {
       const path = await api.saveFileDialog(stripMdExt(tab.title), this.targetDirForNewEntry());
       if (!path) return false;
       await api.writeFile(path, tab.content);
+      this.scheduleSaveSync();
       tab.path = path;
       tab.title = await api.basename(path);
       tab.savedContent = tab.content;
@@ -467,6 +487,30 @@ class AppState {
       this.showToast(`${t("toast.saveAsFailed")}: ${e}`);
       return false;
     }
+  }
+
+  private scheduleSaveSync() {
+    this.localSyncRevision++;
+    if (this.saveSyncTimer !== null) clearTimeout(this.saveSyncTimer);
+    this.saveSyncPending = false;
+    this.saveSyncTimer = setTimeout(() => {
+      this.saveSyncTimer = null;
+      this.saveSyncPending = true;
+      this.runPendingSaveSync();
+    }, 10_000);
+  }
+
+  private runPendingSaveSync() {
+    if (!this.saveSyncPending) return;
+    if (!this.settings.syncEnabled || !this.syncStatus.configured) {
+      this.saveSyncPending = false;
+      return;
+    }
+    // A running sync may already have scanned the file before this save.
+    // Keep the request until its completion event, then run one more pass.
+    if (this.syncStatus.syncing) return;
+    this.saveSyncPending = false;
+    void this.syncNow();
   }
 
   async saveActiveTab() {
@@ -706,6 +750,7 @@ class AppState {
         const name = n === 1 ? `${baseName}.md` : `${baseName} ${n}.md`;
         try {
           entry = await api.createEntry(dir, name, false);
+          this.localSyncRevision++;
           break;
         } catch (e) {
           if (n === 999) throw e;
@@ -724,6 +769,7 @@ class AppState {
   async createEntry(parentDir: string, name: string, isDir: boolean) {
     try {
       const entry = await api.createEntry(parentDir, name, isDir);
+      this.localSyncRevision++;
       this.refreshTree();
       return entry;
     } catch (e) {
@@ -805,6 +851,7 @@ class AppState {
         api
           .writeFile(t.path, updated)
           .then(() => {
+            this.localSyncRevision++;
             t.savedContent = updated;
             t.dirty = false;
             t.savedDocument = null;
@@ -823,6 +870,7 @@ class AppState {
   async renameEntry(path: string, newName: string) {
     try {
       const newPath = await api.renameEntry(path, newName);
+      this.localSyncRevision++;
       for (const t of this.tabs) {
         if (t.path === path) {
           t.path = newPath;
@@ -845,6 +893,7 @@ class AppState {
   async moveEntry(srcPath: string, destDir: string) {
     try {
       const newPath = await api.moveEntry(srcPath, destDir);
+      this.localSyncRevision++;
       for (const t of this.tabs) {
         if (t.path === srcPath) {
           t.path = newPath;
@@ -879,6 +928,7 @@ class AppState {
     if (!pending || !confirm) return;
     try {
       await api.deleteEntry(pending.path);
+      this.localSyncRevision++;
       for (const t of [...this.tabs]) {
         if (t.path === pending.path || (pending.isDir && t.path?.startsWith(pending.path + "\\"))) {
           this.closeTabImmediately(t.id);
@@ -954,17 +1004,24 @@ class AppState {
   }
 
   // Runs a sync immediately (the settings panel's "立即同步" button) and
-  // shows its outcome as a toast — syncStatus itself updates separately via
+  // shows failures as a toast — syncStatus itself updates separately via
   // the "sync-status" event this also triggers, so the status bar reflects
   // it too without needing this call's result.
   async syncNow() {
+    this.syncRequests++;
     try {
       const result = await api.syncNow();
-      this.showToast(result.success ? t("settings.sync.syncSuccess") : `${t("settings.sync.syncFailed")}: ${result.message}`);
+      if (!result.success) {
+        this.syncStatus = { ...this.syncStatus, lastError: result.message };
+        this.showToast(`${t("settings.sync.syncFailed")}: ${result.message}`);
+      }
       return result;
     } catch (e) {
+      this.syncStatus = { ...this.syncStatus, lastError: String(e) };
       this.showToast(`${t("settings.sync.syncFailed")}: ${e}`);
       return null;
+    } finally {
+      this.syncRequests--;
     }
   }
 

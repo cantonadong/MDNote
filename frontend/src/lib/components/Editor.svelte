@@ -242,6 +242,8 @@
   let hoveredColIndex = $state<number | null>(null);
   let imageMenu = $state<{ pos: number; x: number; y: number; centered: boolean; widthPercent: number; src: string } | null>(null);
   let tableCellSelectionRect = $state<{ left: number; top: number; width: number; height: number } | null>(null);
+  let canMergeTableCells = $state(false);
+  let canSplitTableCell = $state(false);
   let tableSelectionToolbarVisible = $state(false);
   let cellTextEditingToolbar = $state(false);
   let tableSelectionToolbarPinned = false;
@@ -367,7 +369,7 @@
   }
 
   function physicalColCount(node: PMNode): number {
-    return node.childCount > 0 ? node.child(0).childCount : 0;
+    return TableMap.get(node).width;
   }
 
   function tableDimensionText(node: PMNode, rowDelta: number, colDelta: number): string {
@@ -421,11 +423,11 @@
   function measureContentColumnWidths(tableEl: HTMLTableElement, node: PMNode): number[] {
     const off = node.attrs.showIndexColumn ? 1 : 0;
     const widths = Array.from({ length: colCount(node) }, () => TABLE_CONTENT_MIN_WIDTH);
-    Array.from(tableEl.rows).forEach((row) => {
-      Array.from(row.cells)
+    tableCellGrid(tableEl).forEach((row) => {
+      row
         .slice(off)
         .forEach((cell, i) => {
-          if (i < widths.length) widths[i] = Math.max(widths[i], measureCellNaturalWidth(cell as HTMLElement));
+          if (i < widths.length) widths[i] = Math.max(widths[i], measureCellNaturalWidth(cell) / cell.colSpan);
         });
     });
     return widths;
@@ -433,9 +435,9 @@
 
   function measurePhysicalColumnContentWidth(tableEl: HTMLTableElement, node: PMNode, index: number): number {
     let width = minWidthForPhysicalColumn(node, index);
-    Array.from(tableEl.rows).forEach((row) => {
-      const cell = row.cells[index] as HTMLElement | undefined;
-      if (cell) width = Math.max(width, measureCellNaturalWidth(cell));
+    tableCellGrid(tableEl).forEach((row) => {
+      const cell = row[index];
+      if (cell) width = Math.max(width, measureCellNaturalWidth(cell) / cell.colSpan);
     });
     return width;
   }
@@ -467,10 +469,41 @@
     return scaled;
   }
 
+  function tableCellGrid(tableEl: HTMLTableElement): HTMLTableCellElement[][] {
+    const grid: HTMLTableCellElement[][] = [];
+    Array.from(tableEl.rows).forEach((row, r) => {
+      grid[r] ??= [];
+      let col = 0;
+      for (const cell of Array.from(row.cells)) {
+        while (grid[r][col]) col++;
+        for (let y = r; y < r + cell.rowSpan; y++) {
+          grid[y] ??= [];
+          for (let x = col; x < col + cell.colSpan; x++) grid[y][x] = cell;
+        }
+        col += cell.colSpan;
+      }
+    });
+    return grid;
+  }
+
+  function physicalColumnRects(tableEl: HTMLTableElement): { left: number; right: number }[] {
+    const columns = Array.from(tableEl.querySelectorAll<HTMLTableColElement>(":scope > colgroup > col"));
+    if (columns.length && columns.every(col => col.getBoundingClientRect().width > 0)) {
+      return columns.map(col => col.getBoundingClientRect());
+    }
+    return Array.from(tableEl.rows[0]?.cells ?? []).flatMap(cell => {
+      const rect = cell.getBoundingClientRect();
+      return Array.from({ length: cell.colSpan }, (_, i) => ({
+        left: rect.left + rect.width * i / cell.colSpan,
+        right: rect.left + rect.width * (i + 1) / cell.colSpan,
+      }));
+    });
+  }
+
   function currentPhysicalColumnWidths(tableEl: HTMLTableElement, node: PMNode): number[] {
-    const cells = tableEl.rows[0] ? Array.from(tableEl.rows[0].cells) : [];
+    const rects = physicalColumnRects(tableEl);
     return Array.from({ length: physicalColCount(node) }, (_, i) =>
-      Math.max(minWidthForPhysicalColumn(node, i), Math.round(cells[i]?.getBoundingClientRect().width ?? TABLE_CONTENT_MIN_WIDTH)),
+      Math.max(minWidthForPhysicalColumn(node, i), Math.round(rects[i] ? rects[i].right - rects[i].left : TABLE_CONTENT_MIN_WIDTH)),
     );
   }
 
@@ -727,6 +760,12 @@
   }
 
   function syncTableCellSelectionRect() {
+    const selected = selectedTableRect();
+    // The generated index column must remain one independent cell per row.
+    canMergeTableCells = !!editor && !!selected
+      && !(selected.ref.node.attrs.showIndexColumn && selected.left === 0)
+      && editor.can().mergeCells();
+    canSplitTableCell = !!editor && !!selected && editor.can().splitCell();
     if (!editor || !wrapperEl || !(editor.state.selection instanceof CellSelection)) {
       tableCellSelectionRect = null;
       tableSelectionToolbarVisible = false;
@@ -856,9 +895,9 @@
     const table = tableGutter ? tableElAt(tableGutter.tablePos) : null;
     const off = tableGutter ? tableColDomOffset(tableGutter.tablePos) : 0;
     const text = table
-      ? Array.from(table.rows)
+      ? tableCellGrid(table)
           .slice(0, 3)
-          .map((r) => r.cells[index + off]?.textContent?.trim() ?? "")
+          .map((r) => r[index + off]?.textContent?.trim() ?? "")
           .filter(Boolean)
           .join(" · ")
       : "";
@@ -898,20 +937,18 @@
       return { top: rect.top - containerRect.top, bottom: rect.bottom - containerRect.top };
     });
     const rowHeights = rows.map((r) => r.bottom - r.top);
-    const firstRowCells = rowEls[0] ? Array.from(rowEls[0].cells) : [];
-    const colWidths = firstRowCells.map((c) => c.getBoundingClientRect().width);
+    const columnRects = physicalColumnRects(tableEl);
+    const colWidths = columnRects.map((rect) => rect.right - rect.left);
     // Drop the index column (if any) from the gutter's own column list —
     // it's not draggable/insertable/deletable like a real column, so the
     // col-grip UI (and everything downstream keyed off this array's
     // indices) should never see it at all.
-    const contentCells = firstRowCells.slice(tableColDomOffset(ref.pos));
-    const cols = contentCells.map((c) => {
-      const rect = c.getBoundingClientRect();
+    const contentRects = columnRects.slice(tableColDomOffset(ref.pos));
+    const cols = contentRects.map((rect) => {
       return { left: rect.left - containerRect.left, right: rect.right - containerRect.left };
     });
     const contentColWidths = cols.map((c) => c.right - c.left);
-    const resizeBoundaries = firstRowCells.slice(tableColDomOffset(ref.pos)).map((c, i) => {
-      const rect = c.getBoundingClientRect();
+    const resizeBoundaries = contentRects.map((rect, i) => {
       const physicalIndex = i + tableColDomOffset(ref.pos);
       return {
         x: rect.right - containerRect.left,
@@ -930,7 +967,7 @@
       tableViewportRight,
       tableViewportTop,
       tableViewportBottom,
-      visibleColCount: firstRowCells.length,
+      visibleColCount: columnRects.length,
       rows,
       cols,
       rowHeights,
@@ -973,16 +1010,15 @@
     return { left, right: left + width, width };
   }
 
-  // Keep each grip centred on an actual visible grid line. When a wide table
-  // is horizontally scrolled, its original left edge can be off-screen; the
-  // same applies to the top edge of a tall table after vertical scrolling.
+  // Keep the narrower row grip centred on the first visible grid line.
   function tableRowGripLeft(gutter: TableGutter) {
     const firstVisibleColumnLine = [gutter.tableLeft, ...gutter.cols.map((col) => col.left)]
       .filter((x) => x >= gutter.tableViewportLeft && x <= gutter.tableViewportRight)
       .sort((a, b) => a - b)[0] ?? gutter.tableViewportLeft;
-    return firstVisibleColumnLine - 15 * zoomScale;
+    return firstVisibleColumnLine - 8 * zoomScale;
   }
 
+  // Keep the column grip centred on the first visible horizontal grid line.
   function tableColGripTop(gutter: TableGutter) {
     const firstVisibleRowLine = [gutter.tableTop, ...gutter.rows.map((row) => row.top)]
       .filter((y) => y >= gutter.tableViewportTop && y <= gutter.tableViewportBottom)
@@ -1739,7 +1775,7 @@
   function targetKeepsTableHandle(target: EventTarget | null) {
     const el = target as HTMLElement | null;
     return !!el?.closest?.(
-      ".handle-group, .table-header-menu, .table-action-menu, .table-gutter-btn, .table-gutter-add, .table-col-resize-hit",
+      ".handle-group, .block-menu, .table-header-menu, .table-action-menu, .table-gutter-btn, .table-gutter-add, .table-col-resize-hit",
     );
   }
 
@@ -2023,6 +2059,16 @@
 
   function onWrapperMouseDown(e: MouseEvent) {
     if (onImageResizeMouseDown(e)) return;
+  }
+
+  function onContentAreaMouseDown(e: MouseEvent) {
+    if (e.button !== 0 || e.defaultPrevented || !editor) return;
+    // Only the pane's blank surfaces need help acquiring editor focus.
+    // Text, node views and controls retain their own mouse behavior.
+    if (e.target !== scrollEl && e.target !== wrapperEl && e.target !== element) return;
+    e.preventDefault();
+    placeCursorAtClientPoint(e.clientX, e.clientY);
+    editor.view.focus();
   }
 
   function onImageResizePointerDown(e: PointerEvent) {
@@ -2776,6 +2822,18 @@
   function finishSelectedTableDeletion() {
     tableCellSelectionRect = null;
     tableSelectionToolbarVisible = false;
+  }
+
+  function mergeSelectedTableCells() {
+    if (!editor || !canMergeTableCells) return;
+    editor.chain().focus().mergeCells().run();
+    onTableCellSelectionFinished();
+  }
+
+  function splitSelectedTableCell() {
+    if (!editor || !canSplitTableCell) return;
+    editor.chain().focus().splitCell().run();
+    onTableCellSelectionFinished();
   }
 
   function deleteSelectedTableRows() {
@@ -4260,6 +4318,7 @@
   bind:this={scrollEl}
   onwheel={onEditorWheel}
   onpointerdown={onMarginPointerDown}
+  onmousedown={onContentAreaMouseDown}
   onmousemove={onContentMouseMove}
   onmouseleave={onContentMouseLeave}
   role="presentation"
@@ -4423,6 +4482,12 @@
         role="presentation"
       >
         <button onmousedown={preventBlur} onclick={copySelectedTableCells}>{t("table.copySelectedCells")}</button>
+        {#if canMergeTableCells}
+          <button onmousedown={preventBlur} onclick={mergeSelectedTableCells}>{t("table.mergeCells")}</button>
+        {/if}
+        {#if canSplitTableCell}
+          <button onmousedown={preventBlur} onclick={splitSelectedTableCell}>{t("table.splitCell")}</button>
+        {/if}
         <button onmousedown={preventBlur} onclick={clearSelectedTableCells}>{t("table.clearSelectedCells")}</button>
         <button class="menu-danger" onmousedown={preventBlur} onclick={deleteSelectedTableRows}>{t("table.deleteSelectedRows")}</button>
         <button class="menu-danger" onmousedown={preventBlur} onclick={deleteSelectedTableColumns}>{t("table.deleteSelectedColumns")}</button>
@@ -5923,6 +5988,10 @@
   }
   .table-gutter-btn:active {
     cursor: grabbing;
+  }
+  .table-row-grip {
+    width: 16px;
+    padding: 0;
   }
   .table-gutter-btn:hover {
     background: var(--hover-bg-strong);
