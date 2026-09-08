@@ -1144,9 +1144,16 @@
   function onAddRowPointerDown(e: PointerEvent) {
     if (e.button !== 0 || !editor || !wrapperEl || !tableGutter) return;
     const gutter = tableGutter;
+    const maybeRef = currentTableRef();
+    if (!maybeRef) return;
+    const ref: TableRef = maybeRef;
     const startY = e.clientY;
     const previousCursor = document.body.style.cursor;
     let started = false;
+    // Lock the originating table for the entire pointer gesture. Without
+    // this, entering a neighbouring table could replace tableGutter and
+    // make both the preview and pointerup mutation jump to that table.
+    tableDragActive = true;
     tableAddDragAxis = "row";
     hoveredTableResizeBoundary = null;
     document.body.style.cursor = "ns-resize";
@@ -1156,7 +1163,6 @@
       ev.preventDefault();
       if (!started) {
         started = true;
-        tableDragActive = true;
       }
       const delta = ev.clientY - startY;
       if (delta > TABLE_ADD_ADJUST_DEADZONE) {
@@ -1166,19 +1172,17 @@
         // Only rows that are already empty can be dragged away — a run of
         // content-filled rows at the bottom stops the preview from growing
         // any further, the same limit removeRows() itself enforces.
-        const ref = currentTableRef();
-        const cap = ref ? Math.min(gutter.rows.length - 1, trailingEmptyRowCount(ref.node)) : 0;
+        const cap = Math.min(gutter.rows.length - 1, trailingEmptyRowCount(ref.node));
         const rowH = gutter.rows.length > 0 ? (gutter.tableBottom - gutter.tableTop) / gutter.rows.length : TABLE_NEW_ROW_HEIGHT;
         const count = Math.min(Math.max(1, Math.ceil(-delta / rowH)), cap);
         tableRowAdjust = count > 0 ? { count, removing: true } : null;
       } else {
         tableRowAdjust = null;
       }
-      const ref = currentTableRef();
       const adjust = tableRowAdjust;
       const strip = tableRowStripRect(gutter);
       tableDimensionLabel =
-        ref && adjust
+        adjust
           ? {
               text: tableDimensionText(ref.node, adjust.removing ? -adjust.count : adjust.count, 0),
               left: strip.left + strip.width / 2,
@@ -1198,12 +1202,9 @@
       const adjust = tableRowAdjust;
       tableRowAdjust = null;
       tableDimensionLabel = null;
-      const ref = currentTableRef();
-      if (ref) {
-        if (!adjust) tableAddRows(editor!, ref, rowCount(ref.node), 1);
-        else if (adjust.removing) tableRemoveRows(editor!, ref, rowCount(ref.node) - adjust.count, adjust.count);
-        else tableAddRows(editor!, ref, rowCount(ref.node), adjust.count);
-      }
+      if (!adjust) tableAddRows(editor!, ref, rowCount(ref.node), 1);
+      else if (adjust.removing) tableRemoveRows(editor!, ref, rowCount(ref.node) - adjust.count, adjust.count);
+      else tableAddRows(editor!, ref, rowCount(ref.node), adjust.count);
       tableGutter = null;
     }
 
@@ -1223,9 +1224,13 @@
   function onAddColPointerDown(e: PointerEvent) {
     if (e.button !== 0 || !editor || !wrapperEl || !tableGutter) return;
     const gutter = tableGutter;
+    const maybeRef = currentTableRef();
+    if (!maybeRef) return;
+    const ref: TableRef = maybeRef;
     const startX = e.clientX;
     const previousCursor = document.body.style.cursor;
     let started = false;
+    tableDragActive = true;
     tableAddDragAxis = "col";
     hoveredTableResizeBoundary = null;
     document.body.style.cursor = "ew-resize";
@@ -1235,25 +1240,22 @@
       ev.preventDefault();
       if (!started) {
         started = true;
-        tableDragActive = true;
       }
       const delta = ev.clientX - startX;
       if (delta > TABLE_ADD_ADJUST_DEADZONE) {
         const count = Math.max(1, Math.ceil(delta / TABLE_NEW_COLUMN_WIDTH));
         tableColAdjust = { count, removing: false };
       } else if (delta < -TABLE_ADD_ADJUST_DEADZONE) {
-        const ref = currentTableRef();
-        const cap = ref ? Math.min(gutter.cols.length - 1, trailingEmptyColumnCount(ref.node)) : 0;
+        const cap = Math.min(gutter.cols.length - 1, trailingEmptyColumnCount(ref.node));
         const count = trailingWidthStepCount(gutter.contentColWidths, -delta, cap);
         tableColAdjust = count > 0 ? { count, removing: true } : null;
       } else {
         tableColAdjust = null;
       }
-      const ref = currentTableRef();
       const adjust = tableColAdjust;
       const visible = tableVisibleRect(gutter);
       tableDimensionLabel =
-        ref && adjust
+        adjust
           ? {
               text: tableDimensionText(ref.node, 0, adjust.removing ? -adjust.count : adjust.count),
               left: visible.right + 34,
@@ -1273,12 +1275,9 @@
       const adjust = tableColAdjust;
       tableColAdjust = null;
       tableDimensionLabel = null;
-      const ref = currentTableRef();
-      if (ref) {
-        if (!adjust) tableAddColumns(editor!, ref, colCount(ref.node), 1);
-        else if (adjust.removing) tableRemoveColumns(editor!, ref, colCount(ref.node) - adjust.count, adjust.count);
-        else tableAddColumns(editor!, ref, colCount(ref.node), adjust.count);
-      }
+      if (!adjust) tableAddColumns(editor!, ref, colCount(ref.node), 1);
+      else if (adjust.removing) tableRemoveColumns(editor!, ref, colCount(ref.node) - adjust.count, adjust.count);
+      else tableAddColumns(editor!, ref, colCount(ref.node), adjust.count);
       tableGutter = null;
     }
 
@@ -3074,8 +3073,13 @@
 
     const tableEl = target?.closest?.("table") as HTMLTableElement | null;
     if (tableEl) {
-      updateTableGutter(tableEl);
-      if (!tableDragActive) updateHoveredGrip(e.clientX, e.clientY);
+      // An add/grip/resize gesture owns the table captured at pointerdown.
+      // Keep its gutter and preview stable when the pointer crosses another
+      // table before pointerup.
+      if (!tableDragActive) {
+        updateTableGutter(tableEl);
+        updateHoveredGrip(e.clientX, e.clientY);
+      }
     } else if (tableGutter && !tableDragActive && !target?.closest?.(".table-gutter-btn, .table-gutter-add, .table-add-col-bridge, .table-col-resize-hit, .table-floating-scrollbar")) {
       // The grip/add buttons are absolutely-positioned siblings of the
       // <table>, not descendants of it — closest("table") alone would fail
@@ -3973,6 +3977,29 @@
     if (pos !== null) copyBlockAt(pos, e);
   }
 
+  function handleTableRef(): TableRef | null {
+    if (!editor) return null;
+    const pos = hoverBlockPos ?? topLevelBlockPos();
+    if (pos === null) return null;
+    const node = editor.state.doc.nodeAt(pos);
+    return node?.type.name === "table" ? { node, pos } : null;
+  }
+
+  function handleTableHasIndexColumn(): boolean {
+    return !!handleTableRef()?.node.attrs.showIndexColumn;
+  }
+
+  function toggleHandleTableIndexColumn(e: MouseEvent) {
+    e.stopPropagation();
+    if (!editor) return;
+    const ref = handleTableRef();
+    if (!ref) return;
+    setShowIndexColumn(editor, ref, !ref.node.attrs.showIndexColumn);
+    menuOpen = false;
+    selectedBlockRect = null;
+    updateHandle();
+  }
+
   function handleCodeBlockPos(): number | null {
     if (!editor) return null;
     const pos = hoverBlockPos ?? topLevelBlockPos();
@@ -4399,6 +4426,19 @@
               <span class="menu-symbol">⧉</span>
               <span>{t("block.copy")}</span>
             </button>
+            {#if handleFormatIcon === "table"}
+              {#if handleTableHasIndexColumn()}
+                <button class="menu-danger" onmousedown={preventBlur} onclick={toggleHandleTableIndexColumn}>
+                  <Icon name="trash" size={14} />
+                  <span>{t("table.deleteIndexColumn")}</span>
+                </button>
+              {:else}
+                <button onmousedown={preventBlur} onclick={toggleHandleTableIndexColumn}>
+                  <Icon name="plus" size={14} />
+                  <span>{t("table.addIndexColumn")}</span>
+                </button>
+              {/if}
+            {/if}
             <div
               class="format-menu-entry"
               role="presentation"
@@ -4804,12 +4844,17 @@
             <span class="switch-knob"></span>
           </span>
         </button>
-        <button class="switch-row" onmousedown={preventBlur} onclick={toggleTableIndexColumn}>
-          <span>{t("table.showIndexColumn")}</span>
-          <span class="switch" class:on={tableHeaderMenu.showIndexColumn} aria-hidden="true">
-            <span class="switch-knob"></span>
-          </span>
-        </button>
+        {#if tableHeaderMenu.showIndexColumn}
+          <button class="menu-danger" onmousedown={preventBlur} onclick={toggleTableIndexColumn}>
+            <Icon name="trash" size={14} />
+            <span>{t("table.deleteIndexColumn")}</span>
+          </button>
+        {:else}
+          <button onmousedown={preventBlur} onclick={toggleTableIndexColumn}>
+            <Icon name="plus" size={14} />
+            <span>{t("table.addIndexColumn")}</span>
+          </button>
+        {/if}
         <div class="menu-sep"></div>
         <button onmousedown={preventBlur} onclick={distributeColumnsEvenlyAction}>
           <Icon name="columns" size={14} />
