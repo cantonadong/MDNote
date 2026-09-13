@@ -2960,7 +2960,7 @@
     const target = e.target as HTMLElement | null;
     if (
       target?.closest?.(
-        ".block-handle, .drag-handle, .block-menu, .block-drag-ghost, .table-gutter-btn, .table-gutter-add, .table-col-resize-hit",
+        ".block-handle, .drag-handle, .block-menu, .block-drag-ghost, .selection-toolbar, .highlight-picker, .table-cell-selection-toolbar, .table-gutter-btn, .table-gutter-add, .table-col-resize-hit",
       )
     )
       return;
@@ -4634,16 +4634,6 @@
         </button>
       </div>
     {/if}
-    {#if highlightPickerOpen}
-      <HighlightColorPicker
-        x={highlightPickerPos.x}
-        y={highlightPickerPos.y}
-        current={highlightCurrentColor}
-        noneLabel={t(highlightPickerKind === "highlight" ? "editor.highlightNone" : "editor.colorNone")}
-        customLabel={t(highlightPickerKind === "highlight" ? "editor.highlightCustom" : "editor.colorCustom")}
-        onPick={applyHighlightColor}
-      />
-    {/if}
     {#if tableGutter}
       {#if !tableAddDragAxis}
         {#each tableGutter.resizeBoundaries as boundary (boundary.index)}
@@ -4961,6 +4951,17 @@
     ></div>
   </div>
 </div>
+<!-- Picker coordinates come from getBoundingClientRect: keep it outside editor zoom. -->
+{#if highlightPickerOpen}
+  <HighlightColorPicker
+    x={highlightPickerPos.x}
+    y={highlightPickerPos.y}
+    current={highlightCurrentColor}
+    noneLabel={t(highlightPickerKind === "highlight" ? "editor.highlightNone" : "editor.colorNone")}
+    customLabel={t(highlightPickerKind === "highlight" ? "editor.highlightCustom" : "editor.colorCustom")}
+    onPick={applyHighlightColor}
+  />
+{/if}
 {#if grammarMenu}
   <div class="context-menu grammar-menu" style={`left:${grammarMenu.x}px; top:${grammarMenu.y}px`}>
     {#if grammarMenu.suggestions.length > 0}

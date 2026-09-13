@@ -9,7 +9,14 @@ set "GOTELEMETRY=off"
 if not exist "%GOCACHE%" mkdir "%GOCACHE%"
 
 where go.exe >nul 2>nul
+if errorlevel 1 if exist "D:\Program\Go\bin\go.exe" set "PATH=D:\Program\Go\bin;%PATH%"
+where go.exe >nul 2>nul
 if errorlevel 1 if exist "%ProgramFiles%\Go\bin\go.exe" set "PATH=%ProgramFiles%\Go\bin;%PATH%"
+where go.exe >nul 2>nul
+if errorlevel 1 (
+  echo [ERROR] go.exe was not found. Install Go or add its bin directory to PATH.
+  goto :failed
+)
 
 where npm.cmd >nul 2>nul
 if errorlevel 1 (
@@ -31,7 +38,7 @@ if not defined WAILS (
 )
 if not defined WAILS (
   echo [ERROR] wails.exe was not found in PATH or %%USERPROFILE%%\go\bin.
-  echo Install it with: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+  echo Install it with: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
   goto :failed
 )
 echo Using Wails: %WAILS%

@@ -20,15 +20,33 @@
   } = $props();
 
   let customInput: HTMLInputElement = $state()!;
+  let picker: HTMLDivElement | undefined = $state();
+
+  function positionPicker() {
+    if (!picker) return;
+    const rect = picker.getBoundingClientRect();
+    picker.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`;
+    picker.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`;
+  }
+
+  $effect(positionPicker);
 
   function onCustomChange(e: Event) {
     onPick((e.target as HTMLInputElement).value);
   }
 </script>
 
+<svelte:window onresize={positionPicker} />
+
 <div
+  bind:this={picker}
   class="highlight-picker"
   style={`left:${x}px; top:${y}px;`}
+  onmousedown={(e) => {
+    // Keep the editor selection visible while choosing a swatch. Allow the
+    // native color input to receive its programmatic click normally.
+    if (!(e.target instanceof HTMLInputElement)) e.preventDefault();
+  }}
   onclick={(e) => e.stopPropagation()}
   role="presentation"
 >
