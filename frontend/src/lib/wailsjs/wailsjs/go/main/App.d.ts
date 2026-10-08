@@ -26,6 +26,8 @@ export function FileExists(arg1:string):Promise<boolean>;
 
 export function GetInitialFile():Promise<string>;
 
+export function GetRecentFileEmojis():Promise<Array<string>>;
+
 export function GetSettings():Promise<main.Settings>;
 
 export function GetSyncStatus():Promise<main.SyncStatus>;
@@ -75,6 +77,8 @@ export function SavePdfDialog(arg1:string,arg2:string):Promise<string>;
 export function SaveSyncSettings(arg1:boolean,arg2:string,arg3:string,arg4:string,arg5:number,arg6:boolean):Promise<main.Settings>;
 
 export function SelectRootDir():Promise<main.Settings>;
+
+export function SetFileEmoji(arg1:string,arg2:string):Promise<void>;
 
 export function SyncNow():Promise<main.SyncResult>;
 

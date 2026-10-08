@@ -16,6 +16,7 @@ type FileEntry struct {
 	Name  string `json:"name"`
 	Path  string `json:"path"`
 	IsDir bool   `json:"isDir"`
+	Emoji string `json:"emoji,omitempty"`
 }
 
 // mdnoteSubdir is the fixed folder name created inside whatever directory
@@ -80,6 +81,7 @@ func (a *App) ListDir(dirPath string) ([]FileEntry, error) {
 		}
 		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
 	})
+	attachFileIcons(result)
 	return result, nil
 }
 
@@ -146,7 +148,7 @@ func (a *App) RenameEntry(path string, newName string) (string, error) {
 	if err := withinRoot(root, newPath); err != nil {
 		return "", err
 	}
-	if err := os.Rename(path, newPath); err != nil {
+	if err := renameWithFileIcons(settings, path, newPath); err != nil {
 		return "", err
 	}
 	updateLinkRegistryPath(settings, path, newPath)
@@ -162,7 +164,7 @@ func (a *App) DeleteEntry(path string) error {
 	if err := withinRoot(effectiveRoot(settings), path); err != nil {
 		return err
 	}
-	return os.RemoveAll(path)
+	return deleteWithFileIcons(settings, path)
 }
 
 // MoveEntry moves srcPath to be a child of destDir (drag & drop in the tree).
@@ -190,7 +192,7 @@ func (a *App) MoveEntry(srcPath string, destDir string) (string, error) {
 	if _, err := os.Stat(newPath); err == nil {
 		return "", fmt.Errorf("%q already exists in target directory", filepath.Base(srcPath))
 	}
-	if err := os.Rename(srcPath, newPath); err != nil {
+	if err := renameWithFileIcons(settings, srcPath, newPath); err != nil {
 		return "", err
 	}
 	updateLinkRegistryPath(settings, srcPath, newPath)

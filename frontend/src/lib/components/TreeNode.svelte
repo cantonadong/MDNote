@@ -3,6 +3,7 @@
   import RasterIcon from "./RasterIcon.svelte";
   import TreeNode from "./TreeNode.svelte";
   import NewEntryRow from "./NewEntryRow.svelte";
+  import EmojiPicker from "./EmojiPicker.svelte";
   import { appState, stripMdExt } from "$lib/appState.svelte";
   import { api, type FileEntry } from "$lib/api";
   import { startRowDrag } from "$lib/dragController";
@@ -16,6 +17,18 @@
   let renameValue = $state("");
   let menuOpen = $state(false);
   let menuPos = $state({ x: 0, y: 0 });
+  let emojiAnchor = $state<HTMLButtonElement | null>(null);
+
+  function openEmojiPicker(e: MouseEvent) {
+    e.stopPropagation();
+    closeMenu();
+    emojiAnchor = emojiAnchor ? null : e.currentTarget as HTMLButtonElement;
+  }
+
+  async function setEmoji(emoji: string) {
+    await api.setFileEmoji(entry.path, emoji);
+    appState.refreshTree();
+  }
 
   function focusRenameInput(node: HTMLInputElement) {
     queueMicrotask(() => {
@@ -104,6 +117,7 @@
   }
 
   function openMenu(e: MouseEvent) {
+    emojiAnchor = null;
     e.preventDefault();
     e.stopPropagation();
     menuPos = { x: e.clientX, y: e.clientY };
@@ -208,9 +222,23 @@
     {:else}
       <span class="chevron-spacer"></span>
     {/if}
-    <span class="row-icon" class:folder-icon={entry.isDir} class:file-icon={!entry.isDir}>
-      <RasterIcon name={entry.isDir ? "folder" : "file"} size={15} />
-    </span>
+    {#if entry.isDir}
+      <span class="row-icon folder-icon"><RasterIcon name="folder" size={15} /></span>
+    {:else}
+      <button
+        class="row-icon file-icon emoji-trigger"
+        title={t("emoji.choose")}
+        aria-label={`${t("emoji.choose")}: ${entry.name}`}
+        aria-haspopup="dialog"
+        aria-expanded={!!emojiAnchor}
+        onpointerdown={(e) => e.stopPropagation()}
+        ondblclick={(e) => e.stopPropagation()}
+        onclick={openEmojiPicker}
+      >
+        {#if entry.emoji}<span class="file-emoji">{entry.emoji}</span>
+        {:else}<RasterIcon name="file" size={15} />{/if}
+      </button>
+    {/if}
     {#if renaming}
       <input
         class="rename-input"
@@ -250,6 +278,10 @@
   {/if}
 </div>
 
+{#if emojiAnchor}
+  <EmojiPicker anchor={emojiAnchor} current={entry.emoji ?? ""} onPick={setEmoji} onClose={() => emojiAnchor = null} />
+{/if}
+
 {#if menuOpen}
   <div class="context-menu" style={`left:${menuPos.x}px; top:${menuPos.y}px`}>
     {#if entry.isDir}
@@ -265,6 +297,23 @@
 {/if}
 
 <style>
+  .emoji-trigger {
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    cursor: pointer;
+    overflow: visible;
+  }
+  .emoji-trigger:hover, .emoji-trigger:focus-visible {
+    background: var(--hover-bg);
+    outline: 1px solid var(--accent);
+  }
+  .file-emoji {
+    font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+    font-size: 16px;
+    line-height: 1;
+  }
   .row {
     position: relative;
     display: flex;

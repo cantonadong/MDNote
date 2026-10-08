@@ -50,6 +50,10 @@ export function GetInitialFile() {
   return window['go']['main']['App']['GetInitialFile']();
 }
 
+export function GetRecentFileEmojis() {
+  return window['go']['main']['App']['GetRecentFileEmojis']();
+}
+
 export function GetSettings() {
   return window['go']['main']['App']['GetSettings']();
 }
@@ -148,6 +152,10 @@ export function SaveSyncSettings(arg1, arg2, arg3, arg4, arg5, arg6) {
 
 export function SelectRootDir() {
   return window['go']['main']['App']['SelectRootDir']();
+}
+
+export function SetFileEmoji(arg1, arg2) {
+  return window['go']['main']['App']['SetFileEmoji'](arg1, arg2);
 }
 
 export function SyncNow() {

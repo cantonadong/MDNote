@@ -1,4 +1,8 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { supportedEmojiGroups } from "$lib/emoji/catalogue";
+  import { preloadEmojiSprites } from "$lib/emoji/sprites";
+  import { preloadRecentEmojis } from "$lib/emoji/recent";
   import RasterIcon from "./RasterIcon.svelte";
   import TreeNode from "./TreeNode.svelte";
   import NewEntryRow from "./NewEntryRow.svelte";
@@ -8,6 +12,16 @@
   let { collapsed = $bindable(false), foregroundMode = false }: { collapsed?: boolean; foregroundMode?: boolean } = $props();
 
   let rootChildren = $state<FileEntry[] | null>(null);
+
+  onMount(() => {
+    void supportedEmojiGroups().catch(() => {});
+    void preloadEmojiSprites().catch(() => {});
+  });
+
+  $effect(() => {
+    const root = appState.effectiveRootDir;
+    if (appState.settings.rootDir) void preloadRecentEmojis(root).catch(() => {});
+  });
 
   function selectActiveTabDirectory() {
     const path = appState.activeTab?.path;

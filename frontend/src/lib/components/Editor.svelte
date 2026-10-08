@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { Editor } from "@tiptap/core";
+  import { clipboardText } from "$lib/editor/clipboardText";
   import { TextSelection } from "@tiptap/pm/state";
   import { CellSelection, TableMap, deleteCellSelection } from "@tiptap/pm/tables";
   import { DOMParser as PMDOMParser, Fragment, type Node as PMNode } from "@tiptap/pm/model";
@@ -514,37 +515,42 @@
     tableEl.style.width = `${widths.reduce((sum, w) => sum + w, 0)}px`;
   }
 
+  function distributeColumnsEvenly(ref: TableRef): boolean {
+    if (!editor) return false;
+    const { node, pos } = ref;
+    const cols = colCount(node);
+    if (cols <= 0) return false;
+    const tableEl = tableElAt(pos);
+    if (!tableEl) return false;
+    const indexColWidth = node.attrs.showIndexColumn ? 40 : 0; // matches the index column's own fixed CSS width
+    const totalWidth = tableEl.getBoundingClientRect().width - indexColWidth;
+    const perCol = Math.max(TABLE_CELL_MIN_WIDTH, Math.floor(totalWidth / cols));
+    setColumnWidths(editor, ref, Array(cols).fill(perCol));
+    return true;
+  }
+
   function distributeColumnsEvenlyAction() {
     if (!editor || !tableHeaderMenu) return;
     const node = editor.state.doc.nodeAt(tableHeaderMenu.tablePos);
     if (!node || node.type.name !== "table") return;
-    const cols = colCount(node);
-    if (cols <= 0) return;
-    const tableEl = tableElAt(tableHeaderMenu.tablePos);
-    if (!tableEl) return;
-    const indexColWidth = node.attrs.showIndexColumn ? 40 : 0; // matches the index column's own fixed CSS width
-    const totalWidth = tableEl.getBoundingClientRect().width - indexColWidth;
-    const perCol = Math.max(TABLE_CELL_MIN_WIDTH, Math.floor(totalWidth / cols));
-    setColumnWidths(editor, { node, pos: tableHeaderMenu.tablePos }, Array(cols).fill(perCol));
+    if (!distributeColumnsEvenly({ node, pos: tableHeaderMenu.tablePos })) return;
     tableHeaderMenu = null;
     selectedBlockRect = null;
   }
 
-  function fitColumnsToContentAction() {
-    if (!editor || !tableHeaderMenu) return;
-    const node = editor.state.doc.nodeAt(tableHeaderMenu.tablePos);
-    if (!node || node.type.name !== "table") return;
+  function fitColumnsToContent(ref: TableRef): boolean {
+    if (!editor) return false;
+    const { node, pos } = ref;
     const cols = colCount(node);
-    if (cols <= 0) return;
-    const tablePos = tableHeaderMenu.tablePos;
+    if (cols <= 0) return false;
     // Clearing colwidth (see setColumnWidths) isn't itself "size to
     // content" — it's "stop overriding size, fall back to the browser's
     // own table layout", which sizes each column from its content's
     // natural width. There's no explicit "measure content" step because
     // that's exactly what a colwidth-less <table> layout already does.
-    const tableEl = tableElAt(tablePos);
-    if (!tableEl) return;
-    setColumnWidths(editor, { node, pos: tablePos }, measureContentColumnWidths(tableEl, node));
+    const tableEl = tableElAt(pos);
+    if (!tableEl) return false;
+    setColumnWidths(editor, ref, measureContentColumnWidths(tableEl, node));
     // TableView's own updateColumns (@tiptap/extension-table) sets
     // min-width once a column's colwidth clears, but never removes a
     // *previously* fixed `width` (e.g. from "evenly distribute" run
@@ -554,6 +560,14 @@
     // contentDOM, so mutating them directly is safe the same way
     // syncTableHeaderAttrs's table-level attribute writes are: ProseMirror's
     // mutation observer only watches contentDOM.
+    return true;
+  }
+
+  function fitColumnsToContentAction() {
+    if (!editor || !tableHeaderMenu) return;
+    const node = editor.state.doc.nodeAt(tableHeaderMenu.tablePos);
+    if (!node || node.type.name !== "table") return;
+    if (!fitColumnsToContent({ node, pos: tableHeaderMenu.tablePos })) return;
     tableHeaderMenu = null;
     selectedBlockRect = null;
   }
@@ -1709,7 +1723,13 @@
     if (!dom) return null;
     const containerRect = wrapperEl.getBoundingClientRect();
     const rect = dom.getBoundingClientRect();
-    const contentRect = element?.getBoundingClientRect() ?? rect;
+    // Wide tables scroll inside .tableWrapper. The reading column's rect is
+    // narrower than that viewport, so using it cuts the block highlight off
+    // partway through the visible table.
+    const tableWrapper = editor.state.doc.nodeAt(pos)?.type.name === "table"
+      ? dom.closest(".tableWrapper") ?? dom.querySelector(".tableWrapper")
+      : null;
+    const contentRect = tableWrapper?.getBoundingClientRect() ?? element?.getBoundingClientRect() ?? rect;
     return {
       top: rect.top - containerRect.top - 4,
       left: contentRect.left - containerRect.left - 8,
@@ -2053,7 +2073,18 @@
   }
 
   function onWrapperPointerDown(e: PointerEvent) {
-    onImageResizePointerDown(e);
+    if (onImageResizePointerDown(e)) return;
+    const target = e.target as HTMLElement | null;
+    if (e.button === 0 && target?.closest?.(".tiptap")) {
+      textSelectionPointerActive = true;
+      selectionToolbar = null;
+    }
+  }
+
+  function finishTextSelectionPointer() {
+    if (!textSelectionPointerActive) return;
+    textSelectionPointerActive = false;
+    requestAnimationFrame(updateSelectionToolbar);
   }
 
   function onWrapperMouseDown(e: MouseEvent) {
@@ -2448,7 +2479,8 @@
   // suite style). Positioned from the live DOM selection's own bounding
   // rect (window.getSelection()) rather than re-deriving it from ProseMirror
   // coordinates — simpler and exactly matches what's visually selected.
-  let selectionToolbar = $state<{ top: number; left: number } | null>(null);
+  let selectionToolbar = $state<{ top: number; left: number; gap?: number } | null>(null);
+  let textSelectionPointerActive = false;
   let highlightPickerOpen = $state(false);
   let highlightPickerKind = $state<"highlight" | "text" | "underline">("highlight");
   let highlightPickerPos = $state({ x: 0, y: 0 });
@@ -2460,7 +2492,37 @@
   // "current" selection happens to be by then.
   let pendingHighlightRange: { ranges: { from: number; to: number }[] } | null = null;
 
+  function selectedTextClientRects(range: Range): DOMRect[] {
+    const textNodes: Text[] = [];
+    const root = range.commonAncestorContainer;
+    if (root.nodeType === Node.TEXT_NODE) {
+      textNodes.push(root as Text);
+    } else {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        textNodes.push(node as Text);
+      }
+    }
+
+    const rects: DOMRect[] = [];
+    for (const textNode of textNodes) {
+      if (!textNode.data.length || !range.intersectsNode(textNode)) continue;
+      const start = textNode === range.startContainer ? range.startOffset : 0;
+      const end = textNode === range.endContainer ? range.endOffset : textNode.data.length;
+      if (end <= start) continue;
+      const textRange = document.createRange();
+      textRange.setStart(textNode, start);
+      textRange.setEnd(textNode, end);
+      rects.push(...Array.from(textRange.getClientRects()));
+    }
+    return rects.filter((rect) => rect.width || rect.height);
+  }
+
   function updateSelectionToolbar() {
+    if (textSelectionPointerActive) {
+      selectionToolbar = null;
+      return;
+    }
     if (!editor || !wrapperEl) {
       selectionToolbar = null;
       return;
@@ -2479,26 +2541,37 @@
       return;
     }
     const range = domSel.getRangeAt(0);
-    const lineRects = Array.from(range.getClientRects()).filter((rect) => rect.width || rect.height);
+    const rangeRects = Array.from(range.getClientRects()).filter((rect) => rect.width || rect.height);
+    // A cross-block DOM Range also returns boxes for fully selected block
+    // elements. Those boxes extend across the content column even though the
+    // browser paints selection blue only behind the glyphs. Prefer per-text-
+    // node rectangles so the toolbar follows the visible selection bounds.
+    const textRects = selectedTextClientRects(range);
+    const lineRects = textRects.length ? textRects : rangeRects;
     const fallbackRect = range.getBoundingClientRect();
-    if (!lineRects.length && !fallbackRect.width && !fallbackRect.height) {
+    if (!lineRects.length && !rangeRects.length && !fallbackRect.width && !fallbackRect.height) {
       selectionToolbar = null;
       return;
     }
     const left = lineRects.length ? Math.min(...lineRects.map((rect) => rect.left)) : fallbackRect.left;
     const right = lineRects.length ? Math.max(...lineRects.map((rect) => rect.right)) : fallbackRect.right;
-    const top = lineRects.length ? Math.min(...lineRects.map((rect) => rect.top)) : fallbackRect.top;
-    const viewportRect = scrollEl?.getBoundingClientRect();
-    const visibleLeft = viewportRect ? Math.max(left, viewportRect.left) : left;
-    const visibleRight = viewportRect ? Math.min(right, viewportRect.right) : right;
-    const visibleCenter = visibleRight > visibleLeft ? (visibleLeft + visibleRight) / 2 : (left + right) / 2;
+    // DOM Range rectangles become unreliable across headings, lists, and
+    // empty paragraphs because they include block boxes as well as glyphs.
+    // ProseMirror's earliest document position is direction-independent and
+    // gives a stable top coordinate while an upward drag crosses those nodes.
+    const top = editor.view.coordsAtPos(selection.from).top;
+    // The toolbar only appears after pointer selection finishes, so a compact
+    // fixed gap is enough; it no longer needs to reserve room for dragging.
+    const gap = 8 * zoomScale;
+    const selectionCenter = (left + right) / 2;
     // Stored raw (container-relative, not yet divided by zoomScale) — same
     // convention as handleTop/dropIndicatorTop: the division happens once,
     // in the template, at render time.
     const containerRect = wrapperEl.getBoundingClientRect();
     selectionToolbar = {
       top: top - containerRect.top,
-      left: visibleCenter - containerRect.left,
+      left: selectionCenter - containerRect.left,
+      gap,
     };
   }
 
@@ -4000,6 +4073,24 @@
     updateHandle();
   }
 
+  function distributeHandleTableColumns(e: MouseEvent) {
+    e.stopPropagation();
+    const ref = handleTableRef();
+    if (!ref || !distributeColumnsEvenly(ref)) return;
+    menuOpen = false;
+    selectedBlockRect = null;
+    updateHandle();
+  }
+
+  function fitHandleTableColumnsToContent(e: MouseEvent) {
+    e.stopPropagation();
+    const ref = handleTableRef();
+    if (!ref || !fitColumnsToContent(ref)) return;
+    menuOpen = false;
+    selectedBlockRect = null;
+    updateHandle();
+  }
+
   function handleCodeBlockPos(): number | null {
     if (!editor) return null;
     const pos = hoverBlockPos ?? topLevelBlockPos();
@@ -4156,6 +4247,11 @@
 
     editor = new Editor({
       element,
+      editorProps: {
+        // Separate actual text blocks, not every enclosing list/item node.
+        // Serialize the supplied slice so block-menu ranges are also respected.
+        clipboardTextSerializer: (slice) => clipboardText(slice.content),
+      },
       extensions: [
         SlashTrigger,
         StarterKit.configure({
@@ -4338,7 +4434,14 @@
   });
 </script>
 
-<svelte:window onpointerdown={onWindowPointerDown} onclick={onWindowClick} onblur={hideTableBlockHandle} onkeydown={onWindowKeydown} />
+<svelte:window
+  onpointerdown={onWindowPointerDown}
+  onpointerup={finishTextSelectionPointer}
+  onpointercancel={finishTextSelectionPointer}
+  onclick={onWindowClick}
+  onblur={hideTableBlockHandle}
+  onkeydown={onWindowKeydown}
+/>
 
 <div
   class="editor-scroll"
@@ -4438,6 +4541,14 @@
                   <span>{t("table.addIndexColumn")}</span>
                 </button>
               {/if}
+              <button onmousedown={preventBlur} onclick={fitHandleTableColumnsToContent}>
+                <Icon name="columns" size={14} />
+                <span>{t("table.fitColumnsToContent")}</span>
+              </button>
+              <button onmousedown={preventBlur} onclick={distributeHandleTableColumns}>
+                <Icon name="columns" size={14} />
+                <span>{t("table.distributeColumnsEvenly")}</span>
+              </button>
             {/if}
             <div
               class="format-menu-entry"
@@ -4540,7 +4651,7 @@
     {#if selectionToolbar && !highlightPickerOpen}
       <div
         class="selection-toolbar"
-        style={`top:${selectionToolbar.top / zoomScale}px; left:${selectionToolbar.left / zoomScale}px`}
+        style={`top:${selectionToolbar.top / zoomScale}px; left:${selectionToolbar.left / zoomScale}px; --selection-toolbar-gap:${(selectionToolbar.gap ?? 8) / zoomScale}px`}
       >
         <button
           class="selection-toolbar-btn"
@@ -5182,7 +5293,7 @@
   .selection-toolbar {
     position: absolute;
     z-index: 60;
-    transform: translate(-50%, calc(-100% - 8px));
+    transform: translate(-50%, calc(-100% - var(--selection-toolbar-gap, 8px)));
     display: flex;
     background: var(--content-bg);
     border: 1px solid var(--border);

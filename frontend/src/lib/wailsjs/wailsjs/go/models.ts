@@ -4,6 +4,7 @@ export namespace main {
 	    name: string;
 	    path: string;
 	    isDir: boolean;
+	    emoji?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new FileEntry(source);
@@ -14,6 +15,7 @@ export namespace main {
 	        this.name = source["name"];
 	        this.path = source["path"];
 	        this.isDir = source["isDir"];
+	        this.emoji = source["emoji"];
 	    }
 	}
 	export class Settings {

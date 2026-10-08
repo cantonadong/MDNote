@@ -6,6 +6,7 @@ export interface FileEntry {
   name: string;
   path: string;
   isDir: boolean;
+  emoji?: string;
 }
 
 export interface Settings {
@@ -113,6 +114,8 @@ export const api = {
     goApp().OpenURL(url);
   },
   listDir: (dirPath: string): Promise<FileEntry[]> => goApp().ListDir(dirPath),
+  getRecentFileEmojis: (): Promise<string[]> => goApp().GetRecentFileEmojis(),
+  setFileEmoji: (path: string, emoji: string): Promise<void> => goApp().SetFileEmoji(path, emoji),
   readFile: (path: string): Promise<string> => goApp().ReadFile(path),
   writeFile: (path: string, content: string): Promise<void> => goApp().WriteFile(path, content),
   createEntry: (parentDir: string, name: string, isDir: boolean): Promise<FileEntry> =>

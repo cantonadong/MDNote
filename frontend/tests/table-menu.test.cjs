@@ -45,6 +45,17 @@ test('left-side whole-table hover menu offers an explicit add or delete index-co
   assert.match(i18nSource, /"table\.deleteIndexColumn": "删除序号列"/);
 });
 
+test('left-side whole-table hover menu offers content-fit and evenly-distributed column widths', () => {
+  const actionMenuStart = source.indexOf('{#if menuMode === "actions"}');
+  const actionMenuEnd = source.indexOf('class="format-menu-entry"', actionMenuStart);
+  const actionMenu = source.slice(actionMenuStart, actionMenuEnd);
+  assert.match(actionMenu, /handleFormatIcon === "table"/);
+  assert.match(actionMenu, /onclick=\{fitHandleTableColumnsToContent\}/);
+  assert.match(actionMenu, /table\.fitColumnsToContent/);
+  assert.match(actionMenu, /onclick=\{distributeHandleTableColumns\}/);
+  assert.match(actionMenu, /table\.distributeColumnsEvenly/);
+});
+
 test('add-row and add-column drags stay bound to the table captured at pointerdown', () => {
   for (const handler of ['onAddRowPointerDown', 'onAddColPointerDown']) {
     const start = source.indexOf(`function ${handler}`);
