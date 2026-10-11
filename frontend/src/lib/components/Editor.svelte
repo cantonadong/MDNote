@@ -82,6 +82,7 @@
   let switching = false;
   let debounceHandle: ReturnType<typeof setTimeout> | null = null;
   let lastTabId: string | null = null;
+  let lastReloadRevision = 0;
 
   let handleTop = $state<number | null>(null);
   let handleLeft = $state(2);
@@ -4414,8 +4415,10 @@
   $effect(() => {
     const tab = appState.activeTab;
     const id = appState.activeTabId;
-    if (!editor || id === lastTabId) return;
+    const revision = tab?.reloadRevision ?? 0;
+    if (!editor || (id === lastTabId && revision === lastReloadRevision)) return;
     lastTabId = id;
+    lastReloadRevision = revision;
     switching = true;
     clearMultiSelect();
     selectionToolbar = null;

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 //go:embed all:frontend/dist
@@ -72,7 +74,12 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 255, G: 255, B: 255, A: 1},
 		OnStartup:        app.startup,
-		OnBeforeClose:    app.onBeforeClose,
+		OnDomReady: func(ctx context.Context) {
+			if initialFile != "" {
+				runtime.WindowShow(ctx)
+			}
+		},
+		OnBeforeClose: app.onBeforeClose,
 		// Wails calls PutAreDefaultContextMenusEnabled(false) on WebView2 for
 		// any non-debug production build, which — per WebView2's own
 		// behavior, not just its native right-click menu — also stops the

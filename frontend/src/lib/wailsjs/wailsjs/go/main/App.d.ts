@@ -85,3 +85,5 @@ export function SyncNow():Promise<main.SyncResult>;
 export function TestSyncConnection(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function WriteFile(arg1:string,arg2:string):Promise<void>;
+
+export function WriteFileChecked(arg1:string,arg2:string,arg3:string):Promise<string>;

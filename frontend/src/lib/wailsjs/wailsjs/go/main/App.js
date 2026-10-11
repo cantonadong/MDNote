@@ -169,3 +169,7 @@ export function TestSyncConnection(arg1, arg2, arg3) {
 export function WriteFile(arg1, arg2) {
   return window['go']['main']['App']['WriteFile'](arg1, arg2);
 }
+
+export function WriteFileChecked(arg1, arg2, arg3) {
+  return window['go']['main']['App']['WriteFileChecked'](arg1, arg2, arg3);
+}

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -19,20 +22,18 @@ import (
 // Cloud sync mirrors the local notes root (fsops.go's effectiveRoot) against
 // a fixed "/MDNote" folder on an InfiniCloud WebDAV account. It's a classic
 // three-way sync (compare local vs. remote vs. "what we saw last time"),
-// with "newer file wins" for genuine conflicts and deletions mirrored in
-// both directions — see performSync below for the full decision table.
+// with content fingerprints and conflict copies. An idle computer must never
+// replace cloud edits merely because its stale text was saved more recently.
 
 const remoteSyncRoot = "/MDNote"
 
-// ManifestEntry records the file mtime (RFC3339 UTC) both sides were known
-// to match as of the last successful sync of that path. Local mtimes are
-// forced to match the remote's reported Last-Modified via os.Chtimes right
-// after every upload/download (see uploadFile/downloadFile), so a single
-// timestamp per path is enough to represent "both sides agree" — no need to
-// track local and remote mtimes separately.
+// ManifestEntry records the last agreed content and legacy timestamp.
 type ManifestEntry struct {
 	SyncedModTime string `json:"syncedModTime"`
+	SyncedHash    string `json:"syncedHash,omitempty"`
 }
+
+func contentHash(data []byte) string { return fmt.Sprintf("%x", sha256.Sum256(data)) }
 
 type syncManifest map[string]ManifestEntry
 
@@ -74,7 +75,23 @@ func saveManifest(m syncManifest) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, data, 0o644)
+	f, err := os.CreateTemp(filepath.Dir(p), "syncstate-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), p)
 }
 
 // walkLocal returns every regular file under root, keyed by its slash-
@@ -134,6 +151,67 @@ func walkRemote(client *gowebdav.Client, root string) (map[string]time.Time, err
 	return out, nil
 }
 
+// Recheck the cloud version and use a conditional PUT to reject changes made
+// by another computer between comparison and upload.
+func removeRemoteChecked(client *gowebdav.Client, remotePath string, expected []byte) error {
+	info, err := client.Stat(remotePath)
+	if err != nil {
+		return err
+	}
+	f, ok := info.(*gowebdav.File)
+	if !ok || f.ETag() == "" || strings.HasPrefix(f.ETag(), "W/") {
+		return fmt.Errorf("cloud server did not provide a strong ETag; deletion skipped")
+	}
+	data, err := client.Read(remotePath)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(data, expected) {
+		return fmt.Errorf("cloud file changed during sync; deletion skipped")
+	}
+	client.SetInterceptor(func(method string, req *http.Request) {
+		if method == "DELETE" {
+			req.Header.Set("If-Match", f.ETag())
+		}
+	})
+	defer client.SetInterceptor(nil)
+	return client.Remove(remotePath)
+}
+
+func uploadFileChecked(client *gowebdav.Client, localPath, remotePath string, manifest syncManifest, relPath string, expected []byte) error {
+	etag := ""
+	if expected != nil {
+		info, err := client.Stat(remotePath)
+		if err != nil {
+			return err
+		}
+		if f, ok := info.(*gowebdav.File); ok {
+			etag = f.ETag()
+		}
+		data, err := client.Read(remotePath)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(data, expected) {
+			return fmt.Errorf("cloud file changed during sync; retry sync")
+		}
+		if etag == "" || strings.HasPrefix(etag, "W/") {
+			return fmt.Errorf("cloud server did not provide a strong ETag; upload skipped to protect cloud content")
+		}
+	}
+	client.SetInterceptor(func(method string, req *http.Request) {
+		if method == "PUT" {
+			if expected == nil {
+				req.Header.Set("If-None-Match", "*")
+			} else {
+				req.Header.Set("If-Match", etag)
+			}
+		}
+	})
+	defer client.SetInterceptor(nil)
+	return uploadFile(client, localPath, remotePath, manifest, relPath)
+}
+
 func uploadFile(client *gowebdav.Client, localPath, remotePath string, manifest syncManifest, relPath string) error {
 	data, err := os.ReadFile(localPath)
 	if err != nil {
@@ -157,7 +235,7 @@ func uploadFile(client *gowebdav.Client, localPath, remotePath string, manifest 
 	if err := os.Chtimes(localPath, mt, mt); err != nil {
 		return err
 	}
-	manifest[relPath] = ManifestEntry{SyncedModTime: mt.Format(time.RFC3339)}
+	manifest[relPath] = ManifestEntry{SyncedModTime: mt.Format(time.RFC3339), SyncedHash: contentHash(data)}
 	return nil
 }
 
@@ -175,7 +253,7 @@ func downloadFile(client *gowebdav.Client, localPath, remotePath string, remoteM
 	if err := os.Chtimes(localPath, remoteMod, remoteMod); err != nil {
 		return err
 	}
-	manifest[relPath] = ManifestEntry{SyncedModTime: remoteMod.Format(time.RFC3339)}
+	manifest[relPath] = ManifestEntry{SyncedModTime: remoteMod.Format(time.RFC3339), SyncedHash: contentHash(data)}
 	return nil
 }
 
@@ -195,7 +273,7 @@ type SyncResult struct {
 //     to the other.
 //   - Present both sides, both changed (or neither side was ever in the
 //     manifest, i.e. two independent copies met for the first time) →
-//     newer file wins.
+//     preserve local content in a synced conflict copy and download cloud content.
 //   - Present on one side only, and the manifest remembers it existed
 //     before → it was deleted on the other side; mirror the deletion.
 //   - Present on one side only, never in the manifest → brand new file;
@@ -203,6 +281,8 @@ type SyncResult struct {
 //   - Present on neither side, but still in the manifest → stale entry,
 //     drop it.
 func performSync(s Settings) SyncResult {
+	noteFilesMu.Lock()
+	defer noteFilesMu.Unlock()
 	root := effectiveRoot(s)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return SyncResult{Success: false, Message: err.Error()}
@@ -260,20 +340,51 @@ func performSync(s Settings) SyncResult {
 			// always os.Chtimes the local file to exactly the mtime
 			// recorded in the manifest, so "unchanged since last sync"
 			// compares as true equality, not a near-miss.
-			localChanged := !hasManifest || localMod.After(manifestMod)
-			remoteChanged := !hasManifest || remoteMod.After(manifestMod)
+			localData, readErr := os.ReadFile(localPath)
+			if readErr != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", relPath, readErr))
+				continue
+			}
+			remoteData, readErr := client.Read(remotePath)
+			if readErr != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", relPath, readErr))
+				continue
+			}
+			if bytes.Equal(localData, remoteData) {
+				manifest[relPath] = ManifestEntry{SyncedModTime: remoteMod.Format(time.RFC3339), SyncedHash: contentHash(localData)}
+				continue
+			}
+			localChanged := !hasManifest || !localMod.Equal(manifestMod)
+			remoteChanged := !hasManifest || !remoteMod.Equal(manifestMod)
+			if manifestEntry.SyncedHash != "" {
+				localChanged = contentHash(localData) != manifestEntry.SyncedHash
+				remoteChanged = contentHash(remoteData) != manifestEntry.SyncedHash
+			} else {
+				// A legacy timestamp cannot prove content is unchanged. Preserve
+				// both versions during the first migration instead of guessing.
+				localChanged, remoteChanged = true, true
+			}
 			var opErr error
 			switch {
 			case !localChanged && !remoteChanged:
 				// already in sync, nothing to do
 			case localChanged && !remoteChanged:
-				opErr = uploadFile(client, localPath, remotePath, manifest, relPath)
+				opErr = uploadFileChecked(client, localPath, remotePath, manifest, relPath, remoteData)
 			case !localChanged && remoteChanged:
 				opErr = downloadFile(client, localPath, remotePath, remoteMod, manifest, relPath)
-			default: // both changed since last sync — newer file wins
-				if localMod.After(remoteMod) {
-					opErr = uploadFile(client, localPath, remotePath, manifest, relPath)
-				} else {
+			default: // Preserve local edits, then accept the cloud version.
+				var copyPath string
+				copyPath, opErr = conflictCopy(localPath, localData)
+				if opErr == nil {
+					copyRel, err := filepath.Rel(root, copyPath)
+					if err != nil {
+						opErr = err
+					} else {
+						copyRel = filepath.ToSlash(copyRel)
+						opErr = uploadFileChecked(client, copyPath, remoteSyncRoot+"/"+copyRel, manifest, copyRel, nil)
+					}
+				}
+				if opErr == nil {
 					opErr = downloadFile(client, localPath, remotePath, remoteMod, manifest, relPath)
 				}
 			}
@@ -285,13 +396,37 @@ func performSync(s Settings) SyncResult {
 
 		case hasLocal && !hasRemote:
 			if hasManifest {
+				data, err := os.ReadFile(localPath)
+				if err != nil {
+					errs = append(errs, fmt.Sprintf("%s: %v", relPath, err))
+					continue
+				}
+				if manifestEntry.SyncedHash == "" || contentHash(data) != manifestEntry.SyncedHash {
+					// Cloud deletion conflicts with local edits: retain a separate
+					// copy instead of destroying edits or resurrecting the original.
+					copyPath, err := conflictCopy(localPath, data)
+					if err != nil {
+						errs = append(errs, fmt.Sprintf("%s: %v", relPath, err))
+						continue
+					}
+					copyRel, err := filepath.Rel(root, copyPath)
+					if err != nil {
+						errs = append(errs, fmt.Sprintf("%s: %v", relPath, err))
+						continue
+					}
+					copyRel = filepath.ToSlash(copyRel)
+					if err := uploadFileChecked(client, copyPath, remoteSyncRoot+"/"+copyRel, manifest, copyRel, nil); err != nil {
+						errs = append(errs, fmt.Sprintf("%s: %v", relPath, err))
+						continue
+					}
+				}
 				if err := os.Remove(localPath); err != nil && !os.IsNotExist(err) {
 					errs = append(errs, fmt.Sprintf(localized("删除本地 %s 失败：%v", "Failed to delete local %s: %v"), relPath, err))
 				} else {
 					delete(manifest, relPath)
 					synced++
 				}
-			} else if err := uploadFile(client, localPath, remotePath, manifest, relPath); err != nil {
+			} else if err := uploadFileChecked(client, localPath, remotePath, manifest, relPath, nil); err != nil {
 				errs = append(errs, fmt.Sprintf(localized("上传 %s 失败：%v", "Failed to upload %s: %v"), relPath, err))
 			} else {
 				synced++
@@ -299,7 +434,21 @@ func performSync(s Settings) SyncResult {
 
 		case !hasLocal && hasRemote:
 			if hasManifest {
-				if err := client.Remove(remotePath); err != nil {
+				data, err := client.Read(remotePath)
+				if err != nil {
+					errs = append(errs, fmt.Sprintf("%s: %v", relPath, err))
+					continue
+				}
+				if manifestEntry.SyncedHash == "" || contentHash(data) != manifestEntry.SyncedHash {
+					// A local deletion cannot destroy a cloud edit.
+					if err := downloadFile(client, localPath, remotePath, remoteMod, manifest, relPath); err != nil {
+						errs = append(errs, fmt.Sprintf("%s: %v", relPath, err))
+					} else {
+						synced++
+					}
+					continue
+				}
+				if err := removeRemoteChecked(client, remotePath, data); err != nil {
 					errs = append(errs, fmt.Sprintf(localized("删除云端 %s 失败：%v", "Failed to delete cloud %s: %v"), relPath, err))
 				} else {
 					delete(manifest, relPath)

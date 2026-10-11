@@ -118,6 +118,8 @@ export const api = {
   setFileEmoji: (path: string, emoji: string): Promise<void> => goApp().SetFileEmoji(path, emoji),
   readFile: (path: string): Promise<string> => goApp().ReadFile(path),
   writeFile: (path: string, content: string): Promise<void> => goApp().WriteFile(path, content),
+  writeFileChecked: (path: string, content: string, expected: string): Promise<string> =>
+    goApp().WriteFileChecked(path, content, expected),
   createEntry: (parentDir: string, name: string, isDir: boolean): Promise<FileEntry> =>
     goApp().CreateEntry(parentDir, name, isDir),
   renameEntry: (path: string, newName: string): Promise<string> => goApp().RenameEntry(path, newName),

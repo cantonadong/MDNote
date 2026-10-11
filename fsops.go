@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 )
 
 // FileEntry describes one child of a directory listing for the left-hand file tree.
@@ -88,6 +90,8 @@ func (a *App) ListDir(dirPath string) ([]FileEntry, error) {
 // ReadFile reads any file the user picked, whether inside the root tree or
 // via the "打开" toolbar dialog (which allows arbitrary .md files).
 func (a *App) ReadFile(path string) (string, error) {
+	noteFilesMu.Lock()
+	defer noteFilesMu.Unlock()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
@@ -103,12 +107,54 @@ func (a *App) ReadFile(path string) (string, error) {
 
 // WriteFile writes back to whatever path the tab is bound to.
 func (a *App) WriteFile(path string, content string) error {
+	noteFilesMu.Lock()
+	defer noteFilesMu.Unlock()
 	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+// Serialize editor saves with cloud downloads so the comparison and write
+// cannot straddle a sync that replaces the file.
+var noteFilesMu sync.Mutex
+
+func conflictCopy(filePath string, data []byte) (string, error) {
+	ext := filepath.Ext(filePath)
+	name := strings.TrimSuffix(filePath, ext) + ".conflict-" + time.Now().UTC().Format("20060102-150405.000000000") + ext
+	f, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return "", err
+	}
+	_, err = f.Write(data)
+	closeErr := f.Close()
+	if err != nil {
+		return "", err
+	}
+	return name, closeErr
+}
+
+// expected is the text the tab originally loaded, before editor serialization.
+// Return a new path when the original has changed; never overwrite that version.
+func (a *App) WriteFileChecked(filePath, content, expected string) (string, error) {
+	noteFilesMu.Lock()
+	defer noteFilesMu.Unlock()
+	data, err := os.ReadFile(filePath)
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	current := string(bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF}))
+	if os.IsNotExist(err) || (current != expected && current != content) {
+		return conflictCopy(filePath, []byte(content))
+	}
+	if current == content {
+		return filePath, nil
+	}
+	return filePath, os.WriteFile(filePath, []byte(content), 0o644)
 }
 
 // CreateEntry creates a new file or directory under parentDir, validated to
 // stay inside the current root.
 func (a *App) CreateEntry(parentDir string, name string, isDir bool) (FileEntry, error) {
+	noteFilesMu.Lock()
+	defer noteFilesMu.Unlock()
 	settings, err := loadSettings()
 	if err != nil {
 		return FileEntry{}, err
@@ -136,6 +182,8 @@ func (a *App) CreateEntry(parentDir string, name string, isDir bool) (FileEntry,
 
 // RenameEntry renames a file/dir in place (same parent dir, new name).
 func (a *App) RenameEntry(path string, newName string) (string, error) {
+	noteFilesMu.Lock()
+	defer noteFilesMu.Unlock()
 	settings, err := loadSettings()
 	if err != nil {
 		return "", err
@@ -157,6 +205,8 @@ func (a *App) RenameEntry(path string, newName string) (string, error) {
 
 // DeleteEntry removes a file or directory (recursively for directories).
 func (a *App) DeleteEntry(path string) error {
+	noteFilesMu.Lock()
+	defer noteFilesMu.Unlock()
 	settings, err := loadSettings()
 	if err != nil {
 		return err
@@ -169,6 +219,8 @@ func (a *App) DeleteEntry(path string) error {
 
 // MoveEntry moves srcPath to be a child of destDir (drag & drop in the tree).
 func (a *App) MoveEntry(srcPath string, destDir string) (string, error) {
+	noteFilesMu.Lock()
+	defer noteFilesMu.Unlock()
 	settings, err := loadSettings()
 	if err != nil {
 		return "", err

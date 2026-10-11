@@ -16,6 +16,7 @@ export interface Tab {
   savedDocument: string | null;
   dirty: boolean;
   missing: boolean; // backing file was deleted/moved outside the app
+  reloadRevision?: number;
 }
 
 export interface PendingClose {
@@ -194,7 +195,10 @@ class AppState {
         this.showToast(`${t("settings.sync.syncFailed")}: ${status.lastError}`);
       }
       this.syncStatus = status;
-      if (!status.syncing) this.runPendingSaveSync();
+      if (!status.syncing) {
+        void this.refreshSyncedTabs();
+        this.runPendingSaveSync();
+      }
     });
     this.updateStatus = await api.getUpdateStatus();
     api.onUpdateStatus((status) => {
@@ -258,6 +262,38 @@ class AppState {
 
   refreshTree() {
     this.treeRefreshToken++;
+  }
+
+  private async refreshSyncedTabs() {
+    this.refreshTree();
+    for (const tab of [...this.tabs]) {
+      if (!tab.path) continue;
+      const path = tab.path;
+      const baseline = tab.savedContent;
+      try {
+        const content = await api.readFile(path);
+        if (tab.path !== path || tab.savedContent !== baseline || !this.tabs.includes(tab)) continue;
+        tab.missing = false;
+        if (content === baseline) continue;
+        // Editor state updates are debounced. Inspect the live document so
+        // typing immediately before this read completes cannot be discarded.
+        if (tab.id === this.activeTabId && editorBridge.instance && tab.savedDocument !== null) {
+          const document = JSON.stringify(editorBridge.instance.getJSON());
+          tab.dirty = document !== tab.savedDocument;
+          if (tab.dirty) this.flushActiveEditorContent();
+        }
+        if (isDirty(tab)) {
+          this.showToast(i18n.locale === "zh" ? "云端文档已更新；你的未保存修改已保留，保存时将另存冲突副本。" : "Cloud document changed. Your edits are kept and will save as a conflict copy.");
+          continue;
+        }
+        tab.content = content;
+        tab.savedContent = content;
+        tab.savedDocument = null;
+        tab.reloadRevision = (tab.reloadRevision ?? 0) + 1;
+      } catch {
+        if (tab.path === path) tab.missing = !(await api.fileExists(path));
+      }
+    }
   }
 
   async selectRootDir() {
@@ -452,13 +488,24 @@ class AppState {
       return this.saveTabAs(tab);
     }
     try {
-      await api.writeFile(tab.path, tab.content);
+      const content = tab.content;
+      const document = tab.id === this.activeTabId && editorBridge.instance
+        ? JSON.stringify(editorBridge.instance.getJSON()) : null;
+      const savedPath = await api.writeFileChecked(tab.path, content, tab.savedContent);
+      if (savedPath !== tab.path) {
+        tab.path = savedPath;
+        tab.title = await api.basename(savedPath);
+        tab.missing = false;
+        this.persistOpenTabs();
+        this.refreshTree();
+        this.showToast(i18n.locale === "zh" ? "原文已更新；你的内容已保存为冲突副本，原文未被覆盖。" : "The original changed. Your content was saved as a conflict copy.");
+      }
       this.scheduleSaveSync();
-      tab.savedContent = tab.content;
-      tab.dirty = false;
-      tab.savedDocument = tab.id === this.activeTabId && editorBridge.instance
-        ? JSON.stringify(editorBridge.instance.getJSON())
-        : null;
+      tab.savedContent = content;
+      tab.savedDocument = document;
+      tab.dirty = tab.id === this.activeTabId && editorBridge.instance && document !== null
+        ? JSON.stringify(editorBridge.instance.getJSON()) !== document
+        : tab.content !== content;
       return true;
     } catch (e) {
       this.showToast(`${t("toast.saveFailed")}: ${e}`);
@@ -849,11 +896,17 @@ class AppState {
       // leaving the tab looking dirty for a change they didn't type.
       if (t.path) {
         api
-          .writeFile(t.path, updated)
-          .then(() => {
+          .writeFileChecked(t.path, updated, t.savedContent)
+          .then(async (savedPath) => {
+            if (savedPath !== t.path) {
+              t.path = savedPath;
+              t.title = await api.basename(savedPath);
+              this.persistOpenTabs();
+              this.refreshTree();
+            }
             this.localSyncRevision++;
             t.savedContent = updated;
-            t.dirty = false;
+            t.dirty = t.content !== updated;
             t.savedDocument = null;
           })
           .catch(() => {

@@ -4,7 +4,12 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"os"
+	"strconv"
+	"strings"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 // Loopback-only port used to detect an already-running instance and forward
@@ -35,6 +40,18 @@ func forwardToRunningInstance(path string) {
 		return
 	}
 	defer conn.Close()
+	// Explorer gives this newly launched process foreground permission.
+	// Transfer it to the existing process before asking it to show its window.
+	// A deadline also keeps forwarding compatible with older instances that
+	// do not send their PID and only wait for a file path.
+	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	pidLine, err := bufio.NewReader(conn).ReadString('\n')
+	if err == nil {
+		if pid, err := strconv.ParseUint(strings.TrimSpace(pidLine), 10, 32); err == nil && pid != 0 {
+			windows.NewLazySystemDLL("user32.dll").NewProc("AllowSetForegroundWindow").Call(uintptr(pid))
+		}
+	}
+	conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
 	fmt.Fprintf(conn, "%s\n", path)
 }
 
@@ -50,6 +67,10 @@ func serveSingleInstance(ln net.Listener, onFile func(string)) {
 		}
 		go func() {
 			defer conn.Close()
+			conn.SetDeadline(time.Now().Add(2 * time.Second))
+			if _, err := fmt.Fprintf(conn, "%d\n", os.Getpid()); err != nil {
+				return
+			}
 			scanner := bufio.NewScanner(conn)
 			if scanner.Scan() {
 				onFile(scanner.Text())
