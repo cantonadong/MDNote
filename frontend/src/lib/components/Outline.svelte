@@ -70,7 +70,7 @@
     padding: 0 8px 12px;
   }
   .outline.collapsed { width:32px; padding:0; overflow:hidden; cursor:pointer; }
-  .outline.foreground-mode { visibility:hidden; pointer-events:none; }
+  .outline.foreground-mode { display:none; }
   .rail-btn,
   .outline-title button {
     border: 0;

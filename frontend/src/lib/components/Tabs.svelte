@@ -8,11 +8,9 @@
   let {
     foregroundMode = false,
     onToggleForeground,
-    onForegroundPointerDown,
   }: {
     foregroundMode?: boolean;
     onToggleForeground: () => void;
-    onForegroundPointerDown?: (event: PointerEvent) => void;
   } = $props();
 
   let scrollEl: HTMLDivElement;
@@ -221,7 +219,7 @@
 
 <svelte:window onclick={menuTab ? closeMenu : undefined} onresize={syncOverflowIndicator} />
 
-<div class="tabs" class:foreground-mode={foregroundMode} onpointerdown={onForegroundPointerDown} role="presentation">
+<div class="tabs" class:foreground-mode={foregroundMode} role="presentation">
   <div class="tabs-scroll" bind:this={scrollEl} onwheel={onWheel} onscroll={syncOverflowIndicator}>
     {#each appState.tabs as tab (tab.id)}
       <div
@@ -306,6 +304,7 @@
   {#if canScrollRight && !foregroundMode}
     <span class="tabs-overflow-indicator" aria-hidden="true"></span>
   {/if}
+  {#if !foregroundMode}
   <button
     class="new-tab-btn"
     title={t("tabs.newTab")}
@@ -316,6 +315,7 @@
   >
     <Icon name="plus" size={15} />
   </button>
+  {/if}
   <button
     class="foreground-btn"
     class:active={foregroundMode}
@@ -493,11 +493,10 @@
     display: none;
   }
   .tabs.foreground-mode {
-    /* Foreground mode uses pointer-driven movement in +page.svelte. Native
-       draggable regions stop WebView pointer delivery at the window edge,
-       which conflicts with the custom clipped-window resize handles. */
-    --wails-draggable: no-drag;
-    -webkit-app-region: no-drag;
+    /* Let Windows move the window, including dragging from maximized state.
+       Resize handles outside this strip retain their own pointer handling. */
+    --wails-draggable: drag;
+    -webkit-app-region: drag;
     cursor: move;
   }
   .tabs-overflow-indicator {
@@ -515,6 +514,11 @@
     --wails-draggable: no-drag;
     -webkit-app-region: no-drag;
     cursor: pointer;
+  }
+  .tabs.foreground-mode .new-tab-btn :global(*),
+  .tabs.foreground-mode .foreground-btn :global(*) {
+    --wails-draggable: no-drag;
+    -webkit-app-region: no-drag;
   }
   .foreground-title {
     position: absolute;

@@ -211,7 +211,7 @@
     width: 32px;
     cursor: pointer;
   }
-  .sidebar.foreground-mode { visibility:hidden; pointer-events:none; }
+  .sidebar.foreground-mode { display:none; }
   .collapse-rail-btn,
   .collapse-btn {
     border: 0;

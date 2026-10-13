@@ -21,7 +21,6 @@
   let foregroundTransitioning = false;
   let layoutBeforeForeground = { sidebarCollapsed: false, outlineCollapsed: false };
   let foregroundInsets = { left: 0, right: 0 };
-  let foregroundEpoch = 0;
   let foregroundRegionQueue: Promise<void> = Promise.resolve();
 
   function queueForegroundRegion(left: number, right: number, enabled: boolean, topmost: boolean): Promise<void> {
@@ -34,139 +33,48 @@
 
   type ResizeDirection = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
-  async function beginForegroundMove(event: PointerEvent) {
-    if (!foregroundMode || event.button !== 0) return;
-    const target = event.target as HTMLElement | null;
-    if (target?.closest("button, input, select, .tab")) return;
-    event.preventDefault();
-    const captureTarget = event.currentTarget as HTMLElement | null;
-    captureTarget?.setPointerCapture?.(event.pointerId);
-    const moveEpoch = foregroundEpoch;
-    const startX = event.screenX;
-    const startY = event.screenY;
-    const scale = window.devicePixelRatio || 1;
-    const startPosition = await api.getWindowPosition();
-    let latestX = startX;
-    let latestY = startY;
-    let frame = 0;
-
-    const apply = () => {
-      frame = 0;
-      if (!foregroundMode || moveEpoch !== foregroundEpoch) return;
-      api.setWindowPosition(
-        Math.round(startPosition.x + (latestX - startX) * scale),
-        Math.round(startPosition.y + (latestY - startY) * scale),
-      );
-    };
-    const move = (e: PointerEvent) => {
-      latestX = e.screenX;
-      latestY = e.screenY;
-      if (!frame) frame = requestAnimationFrame(apply);
-    };
-    const finish = () => {
-      if (frame) {
-        cancelAnimationFrame(frame);
-        apply();
-      }
-      window.removeEventListener("pointermove", move, true);
-      window.removeEventListener("pointerup", finish, true);
-      window.removeEventListener("pointercancel", finish, true);
-    };
-    window.addEventListener("pointermove", move, true);
-    window.addEventListener("pointerup", finish, true);
-    window.addEventListener("pointercancel", finish, true);
+  function refreshForegroundRegion() {
+    if (!foregroundMode || foregroundTransitioning) return;
+    void queueForegroundRegion(foregroundInsets.left, foregroundInsets.right, true, true)
+      .catch((error) => appState.showToast(String(error)));
   }
 
-  async function beginForegroundResize(event: PointerEvent, direction: ResizeDirection) {
+  function beginForegroundResize(event: MouseEvent, direction: ResizeDirection) {
     if (!foregroundMode || event.button !== 0) return;
-    const resizeEpoch = foregroundEpoch;
     event.preventDefault();
     event.stopPropagation();
-    const captureTarget = event.currentTarget as HTMLElement | null;
-    captureTarget?.setPointerCapture?.(event.pointerId);
-    const [startSize, startPosition] = await Promise.all([api.getWindowSize(), api.getWindowPosition()]);
-    const startX = event.screenX;
-    const startY = event.screenY;
-    let latestX = startX;
-    let latestY = startY;
-    let frame = 0;
-
-    const apply = () => {
-      frame = 0;
-      if (!foregroundMode || resizeEpoch !== foregroundEpoch) return;
-      const dx = latestX - startX;
-      const dy = latestY - startY;
-      const west = direction.includes("w");
-      const east = direction.includes("e");
-      const north = direction.includes("n");
-      const south = direction.includes("s");
-      const minWidth = Math.ceil(foregroundInsets.left + foregroundInsets.right + 320);
-      const minHeight = 360;
-      let x = startPosition.x;
-      let y = startPosition.y;
-      let width = startSize.w;
-      let height = startSize.h;
-
-      if (east) width = Math.max(minWidth, startSize.w + dx);
-      if (south) height = Math.max(minHeight, startSize.h + dy);
-      if (west) {
-        width = Math.max(minWidth, startSize.w - dx);
-        x = startPosition.x + (startSize.w - width);
-      }
-      if (north) {
-        height = Math.max(minHeight, startSize.h - dy);
-        y = startPosition.y + (startSize.h - height);
-      }
-      api.setWindowPosition(Math.round(x), Math.round(y));
-      api.setWindowSize(Math.round(width), Math.round(height));
-      void queueForegroundRegion(foregroundInsets.left, foregroundInsets.right, true, true);
-    };
-    const move = (e: PointerEvent) => {
-      latestX = e.screenX;
-      latestY = e.screenY;
-      if (!frame) frame = requestAnimationFrame(apply);
-    };
-    const finish = () => {
-      if (frame) {
-        cancelAnimationFrame(frame);
-        apply();
-      }
-      window.removeEventListener("pointermove", move, true);
-      window.removeEventListener("pointerup", finish, true);
-      window.removeEventListener("pointercancel", finish, true);
-    };
-    window.addEventListener("pointermove", move, true);
-    window.addEventListener("pointerup", finish, true);
-    window.addEventListener("pointercancel", finish, true);
+    // Use the same mousedown event and edge names as Wails' native resize
+    // handler. Its edge map uses CSS cursor names, such as "n-resize".
+    (window as any).WailsInvoke?.(`resize:${direction}-resize`);
   }
-
   async function toggleForegroundMode() {
     if (foregroundTransitioning) return;
     foregroundTransitioning = true;
-    foregroundEpoch += 1;
+    const wasForegroundMode = foregroundMode;
     try {
       if (!foregroundMode) {
         layoutBeforeForeground = { sidebarCollapsed, outlineCollapsed };
         const sidebarWidth = document.querySelector<HTMLElement>(".sidebar")?.getBoundingClientRect().width ?? 0;
         const outlineWidth = document.querySelector<HTMLElement>(".outline")?.getBoundingClientRect().width ?? 0;
         foregroundInsets = { left: sidebarWidth, right: outlineWidth };
-        api.setWindowMinSize(Math.ceil(sidebarWidth + outlineWidth + 320), 360);
-        // Clip first while the sidebars are still rendered. They disappear at
-        // the native window edge; hiding their DOM afterwards changes nothing
-        // inside the already-visible centre region.
-        await queueForegroundRegion(sidebarWidth, outlineWidth, true, true);
+        api.setWindowMinSize(320, 360);
+        // Remove sidebar layout at the same time as the native window shrinks
+        // to the previous editor rectangle.
         flushSync(() => (foregroundMode = true));
+        await queueForegroundRegion(sidebarWidth, outlineWidth, true, true);
       } else {
-        // Restore the complete DOM state while it is still outside the clip,
-        // then make the side strips visible with the final queued native call.
+        await queueForegroundRegion(0, 0, false, false);
+        // Keep the exit control active until Windows has removed the clip.
         flushSync(() => {
           foregroundMode = false;
           sidebarCollapsed = layoutBeforeForeground.sidebarCollapsed;
           outlineCollapsed = layoutBeforeForeground.outlineCollapsed;
         });
-        await queueForegroundRegion(0, 0, false, false);
         api.setWindowMinSize(900, 600);
       }
+    } catch (error) {
+      foregroundMode = wasForegroundMode;
+      appState.showToast(String(error));
     } finally {
       foregroundTransitioning = false;
     }
@@ -177,6 +85,11 @@
   });
 
   function onKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape" && foregroundMode) {
+      e.preventDefault();
+      void toggleForegroundMode();
+      return;
+    }
     const mod = e.ctrlKey || e.metaKey;
     if (!mod) return;
     if (e.key.toLowerCase() === "s" && e.shiftKey) {
@@ -206,12 +119,12 @@
   }
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onresize={refreshForegroundRegion} />
 
 <div class="app-shell">
   <Sidebar bind:collapsed={sidebarCollapsed} {foregroundMode} />
-  <div class="main-col">
-    <Tabs {foregroundMode} onToggleForeground={toggleForegroundMode} onForegroundPointerDown={beginForegroundMove} />
+  <div class="main-col" class:foreground-mode={foregroundMode}>
+    <Tabs {foregroundMode} onToggleForeground={toggleForegroundMode} />
     {#if appState.settingsActive}
       <SettingsPanel />
     {:else}
@@ -221,10 +134,11 @@
       <StatusBar />
     {/if}
     {#if foregroundMode}
+      <div class="foreground-border" aria-hidden="true"></div>
       {#each ["n", "s", "e", "w", "ne", "nw", "se", "sw"] as direction}
         <div
           class={`foreground-resize foreground-resize-${direction}`}
-          onpointerdown={(event) => beginForegroundResize(event, direction as ResizeDirection)}
+          onmousedown={(event) => beginForegroundResize(event, direction as ResizeDirection)}
           role="presentation"
         ></div>
       {/each}
@@ -260,6 +174,15 @@
     height: 100%;
   }
   .foreground-resize { position:absolute; z-index:3000; pointer-events:auto; touch-action:none; --wails-draggable:no-drag; -webkit-app-region:no-drag; }
+  .foreground-border {
+    position: absolute;
+    inset: 0;
+    z-index: 3001;
+    border: 1px solid var(--text-secondary);
+    border-radius: 0;
+    pointer-events: none;
+    opacity: 0.65;
+  }
   .foreground-resize-n { top:0; left:10px; right:10px; height:8px; cursor:n-resize; }
   .foreground-resize-s { bottom:0; left:10px; right:10px; height:8px; cursor:s-resize; }
   .foreground-resize-e { top:10px; right:0; bottom:10px; width:8px; cursor:e-resize; }
