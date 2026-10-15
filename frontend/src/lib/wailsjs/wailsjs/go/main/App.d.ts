@@ -56,9 +56,13 @@ export function RenameEntry(arg1:string,arg2:string):Promise<string>;
 
 export function ResolveLinkID(arg1:string):Promise<string>;
 
+export function RevealImageInExplorer(arg1:string):Promise<void>;
+
 export function RevealInExplorer(arg1:string):Promise<void>;
 
 export function SaveAppSettings(arg1:string,arg2:boolean,arg3:boolean):Promise<main.Settings>;
+
+export function SaveDocumentImage(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function SaveFileDialog(arg1:string,arg2:string):Promise<string>;
 

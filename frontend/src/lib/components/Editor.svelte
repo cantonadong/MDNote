@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { Editor } from "@tiptap/core";
   import { clipboardText } from "$lib/editor/clipboardText";
-  import { TextSelection } from "@tiptap/pm/state";
+  import { NodeSelection, TextSelection } from "@tiptap/pm/state";
   import { CellSelection, TableMap, deleteCellSelection } from "@tiptap/pm/tables";
   import { DOMParser as PMDOMParser, Fragment, type Node as PMNode } from "@tiptap/pm/model";
   import StarterKit from "@tiptap/starter-kit";
@@ -1777,6 +1777,19 @@
     if (hoveredNode?.type.name === "table") {
       const tableEl = tableElAt(pos);
       const rect = tableEl?.getBoundingClientRect();
+      const viewport = scrollEl?.getBoundingClientRect();
+      if (rect && viewport) {
+        const visibleTop = Math.max(rect.top, viewport.top, 0);
+        const visibleBottom = Math.min(rect.bottom, viewport.bottom, window.innerHeight);
+        if (visibleBottom <= visibleTop) {
+          handleTop = null;
+          return;
+        }
+        // Keep the whole-table controls at the centre of the visible table,
+        // including when either end of a long table is outside the viewport.
+        handleHeight = handleBtnSize * zoomScale;
+        handleTop = (visibleTop + visibleBottom - handleHeight) / 2 - containerRect.top;
+      }
       const tableLeft = rect ? rect.left - containerRect.left : 64;
       handleLeft = tableLeft - handleBtnSize * 2 - 12;
     } else {
@@ -1834,7 +1847,7 @@
   }
 
   async function imageSrcForPath(path: string): Promise<string> {
-    return api.saveImageAssetFromPath(path);
+    return api.saveDocumentImage(path, "", appState.activeTab?.path ?? "");
   }
 
   function insertImageSrc(src: string) {
@@ -1876,7 +1889,7 @@
     for (const file of files.filter((f) => f.type.startsWith("image/"))) {
       try {
         const data = await fileToDataURL(file);
-        insertImageSrc(await api.saveImageAssetFromData(data, file.type));
+        insertImageSrc(await api.saveDocumentImage(data, file.type, appState.activeTab?.path ?? ""));
       } catch (e) {
         appState.showToast(`${t("toast.insertImageFailed")}: ${e}`);
       }
@@ -1967,7 +1980,9 @@
     const pos = editor.view.posAtDOM(figure, 0);
     const node = editor.state.doc.nodeAt(pos);
     if (!node || node.type.name !== "mdImage") return;
-    showImageMenuForFigure(figure, pos, node);
+    imageMenu = null;
+    editor.view.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.state.doc, pos)));
+    editor.view.focus();
   }
 
   function onEditorImageContextMenu(e: MouseEvent) {
@@ -1980,6 +1995,7 @@
     const pos = editor.view.posAtDOM(figure, 0);
     const node = editor.state.doc.nodeAt(pos);
     if (!node || node.type.name !== "mdImage") return false;
+    editor.view.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.state.doc, pos)));
     showImageMenuForFigure(figure, pos, node);
     return true;
   }
@@ -2065,9 +2081,8 @@
   async function revealImageInExplorer(e: MouseEvent) {
     e.stopPropagation();
     if (!imageMenu) return;
-    const path = imageMenu.src.replace(/^file:\/\/\//i, "").replace(/\//g, "\\");
     try {
-      await api.revealInExplorer(path);
+      await api.revealImageInExplorer(imageMenu.src);
     } catch (err) {
       appState.showToast(`${t("toast.revealFailed")}: ${err}`);
     }
@@ -4213,6 +4228,36 @@
     updateHandle();
   }
 
+  function positionBlockMenu(node: HTMLElement) {
+    function position() {
+      if (!wrapperEl) return;
+      const handle = wrapperEl.querySelector(".handle-group");
+      const pane = wrapperEl.closest(".editor-scroll");
+      if (!handle || !pane) return;
+      const anchor = handle.getBoundingClientRect();
+      const bounds = pane.getBoundingClientRect();
+      const container = wrapperEl.getBoundingClientRect();
+      const top = Math.max(8, bounds.top + 8);
+      const bottom = Math.min(window.innerHeight - 8, bounds.bottom - 8);
+      const height = node.getBoundingClientRect().height;
+      // A tall table row can extend far below the visible handle. Anchor
+      // to the button, then keep the measured menu inside the editing pane.
+      const preferred = anchor.top + Math.min(anchor.height, handleBtnSize * zoomScale) + 2;
+      const y = Math.max(top, Math.min(preferred, bottom - height));
+      node.style.top = `${(y - container.top) / zoomScale}px`;
+    }
+    const observer = new ResizeObserver(position);
+    observer.observe(node);
+    window.addEventListener("resize", position);
+    position();
+    return {
+      destroy() {
+        observer.disconnect();
+        window.removeEventListener("resize", position);
+      },
+    };
+  }
+
   function toggleMenu(mode: "add" | "actions" = "add") {
     menuOpen = !menuOpen;
     menuMode = mode;
@@ -4526,7 +4571,7 @@
         </button>
       </div>
       {#if menuOpen}
-        <div class="block-menu" class:handle-action-menu={menuMode === "actions"} style={`top:${(handleTop + handleHeight + 2) / zoomScale}px`}>
+        <div class="block-menu" use:positionBlockMenu class:handle-action-menu={menuMode === "actions"}>
           {#if menuMode === "actions"}
             <button onmousedown={preventBlur} onclick={copyHandleBlock}>
               <span class="menu-symbol">⧉</span>
@@ -5768,6 +5813,13 @@
   }
   .editor-content-col :global(.tiptap figure.mdnote-image:hover .mdnote-image-frame::after) {
     opacity: 1;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image.ProseMirror-selectednode) {
+    outline: none;
+  }
+  .editor-content-col :global(.tiptap figure.mdnote-image.ProseMirror-selectednode .mdnote-image-frame::after) {
+    opacity: 1;
+    border: 2px solid var(--accent);
   }
   .editor-content-col :global(.tiptap figure.mdnote-image[data-resizing="true"] .mdnote-image-frame::after) {
     opacity: 1;

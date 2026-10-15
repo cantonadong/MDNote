@@ -196,6 +196,7 @@ class AppState {
       }
       this.syncStatus = status;
       if (!status.syncing) {
+        window.dispatchEvent(new Event("mdnote-images-synced"));
         void this.refreshSyncedTabs();
         this.runPendingSaveSync();
       }
@@ -506,6 +507,7 @@ class AppState {
       tab.dirty = tab.id === this.activeTabId && editorBridge.instance && document !== null
         ? JSON.stringify(editorBridge.instance.getJSON()) !== document
         : tab.content !== content;
+      void api.cleanupUnusedImages(this.tabs.map((t) => t.content)).catch(() => {});
       return true;
     } catch (e) {
       this.showToast(`${t("toast.saveFailed")}: ${e}`);
@@ -529,6 +531,7 @@ class AppState {
         : null;
       tab.missing = false;
       this.refreshTree();
+      void api.cleanupUnusedImages(this.tabs.map((t) => t.content)).catch(() => {});
       return true;
     } catch (e) {
       this.showToast(`${t("toast.saveAsFailed")}: ${e}`);
@@ -634,7 +637,10 @@ class AppState {
       await this.requestCloseTabs(queue);
       return;
     }
-    if (tab.id === this.activeTabId) this.flushActiveEditorContent();
+    // onUpdate synchronously records content and dirty state. Closing only
+    // needs that state: serializing the entire document here blocks the UI
+    // on large files, even when the user has made no edits. Saving through
+    // resolvePendingClose still flushes the live editor before writing.
     await this.checkMissing(tab);
     if (tab.missing) {
       this.pendingClose = { tabId, missing: true, queue };

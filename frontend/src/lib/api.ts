@@ -110,6 +110,7 @@ export const api = {
   fileExists: (path: string): Promise<boolean> => goApp().FileExists(path),
   openWithDefaultApp: (path: string): Promise<void> => goApp().OpenWithDefaultApp(path),
   revealInExplorer: (path: string): Promise<void> => goApp().RevealInExplorer(path),
+  revealImageInExplorer: (src: string): Promise<void> => goApp().RevealImageInExplorer(src),
   openURL: (url: string): void => {
     goApp().OpenURL(url);
   },
@@ -134,6 +135,7 @@ export const api = {
   saveAppSettings: (language: string, outlineAutoNumber: boolean, grammarCheckEnabled: boolean): Promise<Settings> =>
     goApp().SaveAppSettings(language, outlineAutoNumber, grammarCheckEnabled),
   saveImageAssetFromPath: (src: string): Promise<string> => goApp().SaveImageAssetFromPath(src),
+  saveDocumentImage: (src: string, mime: string, documentPath: string): Promise<string> => goApp().SaveDocumentImage(src, mime, documentPath),
   saveImageAssetFromData: (data: string, mime: string): Promise<string> => goApp().SaveImageAssetFromData(data, mime),
   imageDataURL: (path: string): Promise<string> => goApp().ImageDataURL(path),
   saveImageAs: (src: string): Promise<string> => goApp().SaveImageAs(src),

@@ -74,7 +74,9 @@ export const MdImage = Node.create({
   addNodeView() {
     return ({ node }) => {
       const figure = document.createElement("figure");
-      const rawSrc = String(node.attrs.src || "");
+      let rawSrc = String(node.attrs.src || "");
+      let destroyed = false;
+      let loadRevision = 0;
       figure.setAttribute("data-type", "mdnote-image");
       figure.className = "mdnote-image";
       figure.setAttribute("data-src", rawSrc);
@@ -132,18 +134,29 @@ export const MdImage = Node.create({
 
       frame.append(leftHandle, img, missing, rightHandle);
       figure.append(frame);
-      if (rawSrc && !isRemoteOrEmbedded(rawSrc)) {
-        api
-          .imageDataURL(rawSrc)
-          .then((dataURL) => {
-            img.src = dataURL;
-          })
-          .catch(() => {
-            figure.setAttribute("data-invalid", "true");
-          });
+      function loadImage() {
+        const revision = ++loadRevision;
+        if (!rawSrc || isRemoteOrEmbedded(rawSrc)) {
+          img.src = imageDisplaySrc(rawSrc);
+          return;
+        }
+        api.imageDataURL(rawSrc).then((dataURL) => {
+          if (!destroyed && revision === loadRevision) img.src = dataURL;
+        }).catch(() => {
+          if (!destroyed && revision === loadRevision) figure.setAttribute("data-invalid", "true");
+        });
       }
+      function retrySyncedImage() {
+        if (figure.hasAttribute("data-invalid")) loadImage();
+      }
+      loadImage();
+      window.addEventListener("mdnote-images-synced", retrySyncedImage);
       return {
         dom: figure,
+        destroy() {
+          destroyed = true;
+          window.removeEventListener("mdnote-images-synced", retrySyncedImage);
+        },
         stopEvent(event) {
           const target = event.target as HTMLElement | null;
           if (target?.closest?.(".image-resize-handle")) return true;
@@ -152,6 +165,12 @@ export const MdImage = Node.create({
         update(nextNode) {
           if (nextNode.type.name !== "mdImage") return false;
           applyAttrs(nextNode);
+          const nextSrc = String(nextNode.attrs.src || "");
+          if (nextSrc !== rawSrc) {
+            rawSrc = nextSrc;
+            figure.setAttribute("data-src", rawSrc);
+            loadImage();
+          }
           return true;
         },
       };

@@ -110,12 +110,20 @@ export function ResolveLinkID(arg1) {
   return window['go']['main']['App']['ResolveLinkID'](arg1);
 }
 
+export function RevealImageInExplorer(arg1) {
+  return window['go']['main']['App']['RevealImageInExplorer'](arg1);
+}
+
 export function RevealInExplorer(arg1) {
   return window['go']['main']['App']['RevealInExplorer'](arg1);
 }
 
 export function SaveAppSettings(arg1, arg2, arg3) {
   return window['go']['main']['App']['SaveAppSettings'](arg1, arg2, arg3);
+}
+
+export function SaveDocumentImage(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SaveDocumentImage'](arg1, arg2, arg3);
 }
 
 export function SaveFileDialog(arg1, arg2) {

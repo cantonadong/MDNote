@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
@@ -233,8 +234,55 @@ func newImageAssetPath(ext string) (string, error) {
 	return "", fmt.Errorf("could not allocate image filename")
 }
 
+// Asset references are relative to the content root, independent of the
+// computer's drive letter and chosen notes folder.
+func imageAssetReference(path string) string {
+	return imageAssetsDirName + "/" + filepath.Base(path)
+}
+
+func resolveImageSource(src string) (string, error) {
+	trimmed := strings.TrimSpace(src)
+	if strings.HasPrefix(strings.ToLower(trimmed), "file://") {
+		u, err := url.Parse(trimmed)
+		if err != nil {
+			return "", err
+		}
+		trimmed = u.Path
+		if len(trimmed) >= 3 && trimmed[0] == '/' && trimmed[2] == ':' {
+			trimmed = trimmed[1:]
+		}
+	}
+	// Older notes contain absolute paths from the originating computer.
+	// Only remap managed Images/Pic assets, leaving external images alone.
+	normalized := strings.ReplaceAll(trimmed, "\\", "/")
+	parts := strings.Split(normalized, "/")
+	if len(parts) >= 2 {
+		parent, name := parts[len(parts)-2], parts[len(parts)-1]
+		if (strings.EqualFold(parent, imageAssetsDirName) || strings.EqualFold(parent, legacyPicDirName)) && name != "" && name != "." && name != ".." {
+			dir, err := imageAssetsDir(false)
+			if err != nil {
+				return "", err
+			}
+			local := filepath.Join(dir, name)
+			if info, err := os.Stat(local); err == nil && !info.IsDir() {
+				return local, nil
+			}
+			if !filepath.IsAbs(trimmed) {
+				return local, nil
+			}
+		}
+	}
+	return filepath.Abs(trimmed)
+}
+
 // SaveImageAssetFromPath copies a local image, or downloads an http(s) image,
 // into the Images folder inside the current MDNote content root.
+func (a *App) SaveDocumentImage(src, mimeType, documentPath string) (string, error) {
+	if mimeType != "" {
+		return a.SaveImageAssetFromData(src, mimeType)
+	}
+	return a.SaveImageAssetFromPath(src)
+}
 func (a *App) SaveImageAssetFromPath(src string) (string, error) {
 	trimmed := strings.TrimSpace(src)
 	if trimmed == "" {
@@ -265,10 +313,10 @@ func (a *App) SaveImageAssetFromPath(src string) (string, error) {
 		if _, err := io.Copy(f, resp.Body); err != nil {
 			return "", err
 		}
-		return dst, nil
+		return imageAssetReference(dst), nil
 	}
 
-	srcAbs, err := filepath.Abs(trimmed)
+	srcAbs, err := resolveImageSource(trimmed)
 	if err != nil {
 		return "", err
 	}
@@ -293,7 +341,7 @@ func (a *App) SaveImageAssetFromPath(src string) (string, error) {
 	if _, err := io.Copy(out, in); err != nil {
 		return "", err
 	}
-	return dst, nil
+	return imageAssetReference(dst), nil
 }
 
 // SaveImageAssetFromData stores a pasted bitmap/file payload in the Images
@@ -325,7 +373,24 @@ func (a *App) SaveImageAssetFromData(data string, mime string) (string, error) {
 	if err := os.WriteFile(dst, bytes, 0o644); err != nil {
 		return "", err
 	}
-	return dst, nil
+	return imageAssetReference(dst), nil
+}
+
+// RevealImageInExplorer uses the same local asset resolution as image display,
+// including portable references and absolute paths from another computer.
+func (a *App) RevealImageInExplorer(src string) error {
+	path, err := resolveImageSource(src)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("image source is a directory: %s", path)
+	}
+	return a.RevealInExplorer(path)
 }
 
 func (a *App) ImageDataURL(path string) (string, error) {
@@ -333,17 +398,7 @@ func (a *App) ImageDataURL(path string) (string, error) {
 	if trimmed == "" {
 		return "", fmt.Errorf("empty image path")
 	}
-	if strings.HasPrefix(strings.ToLower(trimmed), "file://") {
-		u, err := url.Parse(trimmed)
-		if err != nil {
-			return "", err
-		}
-		trimmed = u.Path
-		if len(trimmed) >= 3 && trimmed[0] == '/' && trimmed[2] == ':' {
-			trimmed = trimmed[1:]
-		}
-	}
-	abs, err := filepath.Abs(trimmed)
+	abs, err := resolveImageSource(trimmed)
 	if err != nil {
 		return "", err
 	}
@@ -390,18 +445,11 @@ func copyImageSourceTo(src string, dst string) error {
 		_, err = io.Copy(out, resp.Body)
 		return err
 	}
-	trimmed := strings.TrimSpace(src)
-	if strings.HasPrefix(strings.ToLower(trimmed), "file://") {
-		u, err := url.Parse(trimmed)
-		if err != nil {
-			return err
-		}
-		trimmed = u.Path
-		if len(trimmed) >= 3 && trimmed[0] == '/' && trimmed[2] == ':' {
-			trimmed = trimmed[1:]
-		}
+	local, err := resolveImageSource(src)
+	if err != nil {
+		return err
 	}
-	in, err := os.Open(trimmed)
+	in, err := os.Open(local)
 	if err != nil {
 		return err
 	}
@@ -458,7 +506,56 @@ func contentReferencesImage(contents []string, path string) bool {
 	return false
 }
 
+func externalImageDocuments() (string, []string, error) {
+	config, err := settingsPath()
+	if err != nil {
+		return "", nil, err
+	}
+	path := filepath.Join(filepath.Dir(config), "external-image-documents.json")
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return path, nil, nil
+	}
+	if err != nil {
+		return path, nil, err
+	}
+	var paths []string
+	err = json.Unmarshal(data, &paths)
+	return path, paths, err
+}
+
+// Called under noteFilesMu. Remember external notes even after their tabs close.
+func trackExternalImageDocument(path string) error {
+	settings, err := loadSettings()
+	if err != nil {
+		return err
+	}
+	if settings.RootDir == "" || withinRoot(effectiveRoot(settings), path) == nil {
+		return nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	registry, paths, err := externalImageDocuments()
+	if err != nil {
+		return err
+	}
+	for _, existing := range paths {
+		if strings.EqualFold(existing, abs) {
+			return nil
+		}
+	}
+	data, err := json.Marshal(append(paths, abs))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(registry, data, 0o644)
+}
+
 func (a *App) CleanupUnusedImages(openContents []string) error {
+	noteFilesMu.Lock()
+	defer noteFilesMu.Unlock()
 	dir, err := imageAssetsDir(false)
 	if err != nil {
 		return err
@@ -467,18 +564,43 @@ func (a *App) CleanupUnusedImages(openContents []string) error {
 		return nil
 	}
 	contents := append([]string{}, openContents...)
+	_, externalPaths, err := externalImageDocuments()
+	if err != nil {
+		return err
+	}
+	for _, path := range externalPaths {
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		contents = append(contents, string(data))
+	}
 	settings, err := loadSettings()
-	if err == nil && settings.RootDir != "" {
+	if err != nil {
+		return err
+	}
+	if settings.RootDir != "" {
 		root := effectiveRoot(settings)
-		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
-			if walkErr != nil || d.IsDir() || !strings.EqualFold(filepath.Ext(path), ".md") {
+		err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if d.IsDir() || !strings.EqualFold(filepath.Ext(path), ".md") {
 				return nil
 			}
-			if data, readErr := os.ReadFile(path); readErr == nil {
-				contents = append(contents, string(data))
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
 			}
+			contents = append(contents, string(data))
 			return nil
 		})
+		if err != nil {
+			return err
+		}
 	}
 	return filepath.WalkDir(dir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil || d.IsDir() {

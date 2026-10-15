@@ -102,6 +102,9 @@ func (a *App) ReadFile(path string) (string, error) {
 	// first line, since the BOM — not "#" — is then the true first
 	// character.
 	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	if err := trackExternalImageDocument(path); err != nil {
+		return "", err
+	}
 	return string(data), nil
 }
 
@@ -109,6 +112,9 @@ func (a *App) ReadFile(path string) (string, error) {
 func (a *App) WriteFile(path string, content string) error {
 	noteFilesMu.Lock()
 	defer noteFilesMu.Unlock()
+	if err := trackExternalImageDocument(path); err != nil {
+		return err
+	}
 	return os.WriteFile(path, []byte(content), 0o644)
 }
 
@@ -136,13 +142,20 @@ func conflictCopy(filePath string, data []byte) (string, error) {
 func (a *App) WriteFileChecked(filePath, content, expected string) (string, error) {
 	noteFilesMu.Lock()
 	defer noteFilesMu.Unlock()
+	if err := trackExternalImageDocument(filePath); err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(filePath)
 	if err != nil && !os.IsNotExist(err) {
 		return "", err
 	}
 	current := string(bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF}))
 	if os.IsNotExist(err) || (current != expected && current != content) {
-		return conflictCopy(filePath, []byte(content))
+		path, err := conflictCopy(filePath, []byte(content))
+		if err != nil {
+			return path, err
+		}
+		return path, trackExternalImageDocument(path)
 	}
 	if current == content {
 		return filePath, nil
