@@ -12,7 +12,8 @@ export function buildOutline(editor: Editor): OutlineItem[] {
     if (node.type.name === "heading") {
       items.push({ level: node.attrs.level as number, text: node.textContent, pos });
     }
-    return true;
+    // Text blocks cannot contain headings; skip their inline children.
+    return !node.isTextblock;
   });
   return items;
 }

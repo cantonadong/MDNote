@@ -4,9 +4,7 @@
 // its own entry point reads the files via node:fs, which doesn't exist in
 // this Vite-bundled browser build, and its package.json `exports` field
 // blocks importing the raw .aff/.dic subpaths directly.
-import affData from "./en.aff?raw";
-import dicData from "./en.dic?raw";
-import nspell from "nspell";
+import type nspell from "nspell";
 
 let speller: nspell | null = null;
 let loadPromise: Promise<nspell> | null = null;
@@ -18,11 +16,16 @@ let loadPromise: Promise<nspell> | null = null;
 export function getSpeller(): Promise<nspell> {
   if (speller) return Promise.resolve(speller);
   if (!loadPromise) {
-    loadPromise = new Promise((resolve) => {
-      setTimeout(() => {
-        speller = nspell(affData, dicData);
-        resolve(speller);
-      }, 0);
+    loadPromise = Promise.all([
+      import("nspell"),
+      import("./en.aff?raw"),
+      import("./en.dic?raw"),
+    ]).then(([{ default: createSpeller }, { default: aff }, { default: dic }]) => {
+      speller = createSpeller(aff, dic);
+      return speller;
+    }).catch((error) => {
+      loadPromise = null;
+      throw error;
     });
   }
   return loadPromise;

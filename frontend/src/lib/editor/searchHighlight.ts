@@ -37,6 +37,9 @@ export function findMatches(doc: ProseMirrorNode, query: string): SearchMatch[] 
 export const SearchHighlight = Extension.create({
   name: "searchHighlight",
   addProseMirrorPlugins() {
+    let cachedState: SearchState | undefined;
+    let cachedDoc: ProseMirrorNode | undefined;
+    let cachedDecorations = DecorationSet.empty;
     return [
       new Plugin<SearchState>({
         key: searchPluginKey,
@@ -64,13 +67,23 @@ export const SearchHighlight = Extension.create({
         props: {
           decorations(state) {
             const s = searchPluginKey.getState(state);
-            if (!s || s.matches.length === 0) return DecorationSet.empty;
+            if (!s || s.matches.length === 0) {
+              cachedState = undefined;
+              cachedDoc = undefined;
+              cachedDecorations = DecorationSet.empty;
+              return DecorationSet.empty;
+            }
+            // Cursor-only transactions reuse search state and document.
+            if (s === cachedState && state.doc === cachedDoc) return cachedDecorations;
             const decos = s.matches.map((m, i) =>
               Decoration.inline(m.from, m.to, {
                 class: i === s.activeIndex ? "search-match search-match-active" : "search-match",
               }),
             );
-            return DecorationSet.create(state.doc, decos);
+            cachedState = s;
+            cachedDoc = state.doc;
+            cachedDecorations = DecorationSet.create(state.doc, decos);
+            return cachedDecorations;
           },
         },
       }),

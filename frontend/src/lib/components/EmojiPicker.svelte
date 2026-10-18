@@ -16,9 +16,11 @@
 
   let picker: HTMLDivElement;
   let scroller: HTMLDivElement;
-  let groups = $state.raw<EmojiGroup[]>(cachedEmojiGroups());
+  const initialGroups = cachedEmojiGroups();
+  let groups = $state.raw<EmojiGroup[]>(initialGroups);
   let recent = $state<string[]>(cachedRecentEmojis());
-  let category = $state(groups.find(group => group.entries.some(entry => entry.emoji === current))?.name ?? groups[0]?.name ?? "");
+  // Initialize once; later loading preserves the user's category selection.
+  let category = $state(initialGroups.find(group => group.entries.some(entry => entry.emoji === current))?.name ?? initialGroups[0]?.name ?? "");
   let saving = $state(false);
   let error = $state("");
   let spriteRevision = $state(0);

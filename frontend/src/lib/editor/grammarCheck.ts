@@ -76,6 +76,9 @@ function isMisspelled(speller: nspell, word: string): boolean {
 function buildDecorations(doc: ProseMirrorNode, enabled: boolean, speller: nspell | null): DecorationSet {
   if (!enabled || !speller) return DecorationSet.empty;
   const decos: Decoration[] = [];
+  // A word often appears many times. Keep this cache local to one scan so
+  // custom dictionary changes are reflected on the very next rebuild.
+  const misspellings = new Map<string, boolean>();
   doc.descendants((node, pos, parent) => {
     if (!node.isText || !node.text) return;
     if (isCodeContext(parent, node)) return;
@@ -91,8 +94,13 @@ function buildDecorations(doc: ProseMirrorNode, enabled: boolean, speller: nspel
       const gap = text.slice(prevEndInText, m.index);
       if (prevWord && prevWord.toLowerCase() === word.toLowerCase() && /^\s+$/.test(gap)) {
         decos.push(Decoration.inline(from, to, { class: "grammar-error" }));
-      } else if (isMisspelled(speller, word)) {
-        decos.push(Decoration.inline(from, to, { class: "grammar-error" }));
+      } else {
+        let misspelled = misspellings.get(word);
+        if (misspelled === undefined) {
+          misspelled = isMisspelled(speller, word);
+          misspellings.set(word, misspelled);
+        }
+        if (misspelled) decos.push(Decoration.inline(from, to, { class: "grammar-error" }));
       }
       prevWord = word;
       prevEndInText = m.index + word.length;
@@ -204,7 +212,7 @@ export function setGrammarCheckEnabled(view: EditorView, enabled: boolean) {
   view.dispatch(view.state.tr.setMeta(grammarCheckKey, { enabled }));
   if (enabled) {
     void getSpeller().then(() => {
-      if (!view.isDestroyed) {
+      if (!view.isDestroyed && grammarCheckKey.getState(view.state)?.enabled) {
         view.dispatch(view.state.tr.setMeta(grammarCheckKey, { enabled: true, recompute: true }));
       }
     });

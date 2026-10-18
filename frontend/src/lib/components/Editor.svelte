@@ -758,21 +758,28 @@
     });
   }
 
+  let activeTableCell: HTMLElement | null = null;
+
   function syncActiveTableCell() {
     if (!editor) return;
-    editor.view.dom.querySelectorAll(".active-table-cell").forEach((el) => el.classList.remove("active-table-cell"));
     // A rectangular cell selection has its own single outer outline. Do
     // not also draw the editing-cell inset border inside that rectangle.
-    if (editor.state.selection instanceof CellSelection) return;
-    const from = editor.state.selection.$from;
-    for (let depth = from.depth; depth > 0; depth--) {
-      const node = from.node(depth);
-      if (node.type.name !== "tableCell" && node.type.name !== "tableHeader") continue;
-      const dom = editor.view.nodeDOM(from.before(depth)) as HTMLElement | null;
-      dom?.classList.add("active-table-cell");
-      return;
+    let next: HTMLElement | null = null;
+    if (!(editor.state.selection instanceof CellSelection)) {
+      const from = editor.state.selection.$from;
+      for (let depth = from.depth; depth > 0; depth--) {
+        const node = from.node(depth);
+        if (node.type.name !== "tableCell" && node.type.name !== "tableHeader") continue;
+        next = editor.view.nodeDOM(from.before(depth)) as HTMLElement | null;
+        break;
+      }
     }
+    if (activeTableCell !== next) activeTableCell?.classList.remove("active-table-cell");
+    activeTableCell = next;
+    if (next && !next.classList.contains("active-table-cell")) next.classList.add("active-table-cell");
   }
+
+  let tableSelectionFrame: number | null = null;
 
   function syncTableCellSelectionRect() {
     const selected = selectedTableRect();
@@ -787,7 +794,9 @@
       cellTextEditingToolbar = false;
       return;
     }
-    requestAnimationFrame(() => {
+    if (tableSelectionFrame !== null) return;
+    tableSelectionFrame = requestAnimationFrame(() => {
+      tableSelectionFrame = null;
       if (!editor || !wrapperEl || !(editor.state.selection instanceof CellSelection)) {
         tableCellSelectionRect = null;
         tableSelectionToolbarVisible = false;
@@ -879,8 +888,14 @@
     });
   }
 
+  let tableWrapperFrame: number | null = null;
+
   function queueTableWrapperSync() {
-    requestAnimationFrame(syncWideTableWrappers);
+    if (tableWrapperFrame !== null) return;
+    tableWrapperFrame = requestAnimationFrame(() => {
+      tableWrapperFrame = null;
+      syncWideTableWrappers();
+    });
   }
 
   function labelForTableRow(index: number): string {
@@ -1684,11 +1699,6 @@
     appState.updateActiveContent(md, JSON.stringify(editor.getJSON()));
   }
 
-  function syncFromEditor() {
-    syncContentFromEditor();
-    refreshDerivedState();
-  }
-
   // Outline/word-count only, without touching tab.content. Used right after
   // loading/switching a tab: re-serializing the freshly-parsed markdown here
   // too would overwrite tab.content with tiptap-markdown's round-tripped
@@ -1704,7 +1714,10 @@
 
   function scheduleSync() {
     if (debounceHandle) clearTimeout(debounceHandle);
-    debounceHandle = setTimeout(syncFromEditor, 200);
+    debounceHandle = setTimeout(() => {
+      debounceHandle = null;
+      refreshDerivedState();
+    }, 200);
   }
 
   function topLevelBlockPos(): number | null {
@@ -2091,6 +2104,15 @@
   function onWrapperPointerDown(e: PointerEvent) {
     if (onImageResizePointerDown(e)) return;
     const target = e.target as HTMLElement | null;
+    const figure = target?.closest?.('figure[data-type="mdnote-image"]');
+    if (e.button === 0 && figure && editor) {
+      const pos = editor.view.posAtDOM(figure, 0);
+      if (editor.state.doc.nodeAt(pos)?.type.name === "mdImage") {
+        e.preventDefault();
+        onDragHandlePointerDown(e, pos);
+        return;
+      }
+    }
     if (e.button === 0 && target?.closest?.(".tiptap")) {
       textSelectionPointerActive = true;
       selectionToolbar = null;
@@ -3247,8 +3269,8 @@
     const result = editor.view.posAtCoords({ left: x, top: y });
     if (!result) return;
     const resolved = editor.state.doc.resolve(result.pos);
-    if (resolved.depth < 1) return;
-    let blockPos = effectiveBlockPos(resolved);
+    // Atom blocks (including images) resolve at their boundary in the doc.
+    let blockPos = resolved.depth < 1 ? result.pos : effectiveBlockPos(resolved);
     if (multiSelectDragging) {
       // A multi-block group selection has no sensible single-row form, so
       // it can't be wrapped into one list item — always target whole
@@ -3256,7 +3278,7 @@
       // existed. A single-row drag (the common case) can target any row,
       // in any list, or any top-level block — commitBlockMove wraps/
       // unwraps as needed to fit wherever it lands.
-      blockPos = resolved.before(1);
+      blockPos = resolved.depth < 1 ? result.pos : resolved.before(1);
     }
     if (blockPos >= dragSource.from && blockPos < dragSource.to) {
       // Hovering over the dragged block's own (former) range — no-op target.
@@ -3383,13 +3405,13 @@
 
   const BLOCK_DRAG_THRESHOLD = 4;
 
-  function onDragHandlePointerDown(e: PointerEvent) {
+  function onDragHandlePointerDown(e: PointerEvent, imagePos?: number) {
     if (e.button !== 0 || !editor) return;
     // The handle can be showing via the keyboard/cursor fallback (the mouse
     // hasn't moved over the content since a click/keyboard nav placed the
     // cursor, so hoverBlockPos is still null) — grabbing it in that state
     // must act on the cursor's block instead of silently doing nothing.
-    const pos = hoverBlockPos ?? topLevelBlockPos();
+    const pos = imagePos ?? hoverBlockPos ?? topLevelBlockPos();
     if (pos === null) return;
     // Grabbing a handle that belongs to an already-selected group drags the
     // whole group, not just that one row — same gesture, bigger source range.
@@ -3420,6 +3442,10 @@
       if (!started) {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < BLOCK_DRAG_THRESHOLD) return;
         started = true;
+        if (imagePos !== undefined) {
+          imageMenu = null;
+          suppressImageClickUntil = Date.now() + 800;
+        }
         selectedBlockRect = null;
         dragSource = source;
         if (isGroupDrag) {
@@ -3448,7 +3474,11 @@
       document.body.style.cursor = "";
       blockDragGhost = null;
       if (started) {
+        if (imagePos !== undefined) suppressImageClickUntil = Date.now() + 800;
         commitBlockMove();
+      } else if (imagePos !== undefined) {
+        editor!.view.dispatch(editor!.state.tr.setSelection(NodeSelection.create(editor!.state.doc, imagePos)));
+        editor!.view.focus();
       } else {
         dragSource = null;
         dropTargetPos = null;
@@ -3459,7 +3489,8 @@
       }
     }
 
-    function onUp() {
+    function onUp(ev: PointerEvent) {
+      if (started) updateDropTarget(ev.clientX, ev.clientY);
       finish();
     }
 
@@ -4380,7 +4411,8 @@
         if (!menuOpen && hoverBlockPos === null) handleTop = null;
         slashMenuState.close();
         selectionToolbar = null;
-        editor?.view.dom.querySelectorAll(".active-table-cell").forEach((el) => el.classList.remove("active-table-cell"));
+        activeTableCell?.classList.remove("active-table-cell");
+        activeTableCell = null;
       },
       onCreate: () => {
         appState.ensureActiveDocumentBaseline(JSON.stringify(editor!.getJSON()));
@@ -4388,9 +4420,9 @@
         syncActiveTableCell();
         queueTableWrapperSync();
       },
-      onTransaction: () => {
+      onTransaction: ({ transaction }) => {
         syncUndoRedo();
-        syncTableHeaderAttrs();
+        if (transaction.docChanged) syncTableHeaderAttrs();
         syncImageMenuTarget();
         syncActiveTableCell();
         syncTableCellSelectionRect();
@@ -4418,6 +4450,9 @@
 
   onDestroy(() => {
     if (debounceHandle) clearTimeout(debounceHandle);
+    if (tableWrapperFrame !== null) cancelAnimationFrame(tableWrapperFrame);
+    if (tableSelectionFrame !== null) cancelAnimationFrame(tableSelectionFrame);
+    activeTableCell = null;
     if (tableSelectionToolbarHideTimer) clearTimeout(tableSelectionToolbarHideTimer);
     scrollEl?.removeEventListener("scroll", onEditorScroll);
     window.removeEventListener("resize", queueTableWrapperSync);
