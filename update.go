@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	appVersion       = "2.1.0"
+	appVersion       = "2.3.0"
 	latestReleaseURL = "https://api.github.com/repos/cantonadong/MDNote/releases/latest"
 	updateAssetName  = "MDNote.exe"
 )
