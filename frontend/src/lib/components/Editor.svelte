@@ -3969,6 +3969,8 @@
   //    collapse to the same in-place replace for it (nothing left behind).
   async function insertBlock(key: string) {
     if (!editor) return;
+    const selectedRange = multiSelectRange ?? (!editor.state.selection.empty
+      ? { from: editor.state.selection.from, to: editor.state.selection.to } : null);
     const pos = hoverBlockPos ?? topLevelBlockPos();
     if (pos === null) return;
     const node = editor.state.doc.nodeAt(pos);
@@ -3996,6 +3998,55 @@
     if (!editor) return;
 
     if (wantsConvert && CONVERTIBLE_KEYS.has(effectiveKey)) {
+      if (selectedRange) {
+        const blocks: Record<string, any>[] = [];
+        let from = -1;
+        let to = 0;
+        const append = (block: Record<string, any>) => {
+          const previous = blocks.at(-1);
+          if (previous && ["orderedList", "bulletList", "taskList"].includes(block.type) && previous.type === block.type) {
+            previous.content.push(...block.content);
+          } else {
+            blocks.push(block);
+          }
+        };
+        const convert = (block: import("@tiptap/pm/model").Node, pos: number) => {
+          if (pos >= selectedRange.to || pos + block.nodeSize <= selectedRange.from) {
+            append(block.toJSON());
+            return;
+          }
+          const lines: Record<string, unknown>[][] = [[]];
+          for (const inline of extractInlineContent(block)) {
+            if (inline.type === "hardBreak") lines.push([]);
+            else lines[lines.length - 1].push(inline);
+          }
+          for (const inline of lines) {
+            const converted = buildConvertedContent(effectiveKey, inline, extra);
+            for (const item of Array.isArray(converted) ? converted : [converted]) append(item);
+          }
+        };
+        editor.state.doc.forEach((block, pos) => {
+          if (pos >= selectedRange.to || pos + block.nodeSize <= selectedRange.from) return;
+          if (from < 0) from = pos;
+          to = pos + block.nodeSize;
+          if (["orderedList", "bulletList", "taskList"].includes(block.type.name)) {
+            block.forEach((item, offset) => {
+              const itemPos = pos + 1 + offset;
+              if (itemPos >= selectedRange.to || itemPos + item.nodeSize <= selectedRange.from) {
+                append({ ...block.toJSON(), content: [item.toJSON()] });
+              } else convert(item, itemPos);
+            });
+          } else convert(block, pos);
+        });
+        if (from >= 0) {
+          clearMultiSelect();
+          editor.chain().focus().insertContentAt({ from, to }, blocks).run();
+        }
+        menuOpen = false;
+        formatMenuOpen = false;
+        updateHandle();
+        return;
+      }
       if (effectiveKey === currentFormatKey) {
         // Already this format — nothing to do (also avoids gratuitously
         // fragmenting a list into before/after pieces around a no-op).
@@ -4508,6 +4559,11 @@
     // whole-document replace onto the undo stack, and a couple of undos
     // after opening a file could wipe everything just typed.
     editor.chain().setMeta("addToHistory", false).setContent(tab?.content ?? "", { emitUpdate: false }).run();
+    editor.commands.setTextSelection(0);
+    if (scrollEl) scrollEl.scrollTop = 0;
+    requestAnimationFrame(() => {
+      if (appState.activeTabId === id && scrollEl) scrollEl.scrollTop = 0;
+    });
     switching = false;
     appState.ensureActiveDocumentBaseline(JSON.stringify(editor.getJSON()));
     refreshDerivedState();

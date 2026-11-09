@@ -180,6 +180,23 @@ func removeRemoteChecked(client *gowebdav.Client, remotePath string, expected []
 
 func uploadFileChecked(client *gowebdav.Client, localPath, remotePath string, manifest syncManifest, relPath string, expected []byte) error {
 	etag := ""
+	if expected == nil {
+		remoteData, readErr := client.Read(remotePath)
+		if readErr == nil {
+			localData, err := os.ReadFile(localPath)
+			if err != nil {
+				return err
+			}
+			if bytes.Equal(localData, remoteData) {
+				info, err := client.Stat(remotePath)
+				if err != nil {
+					return err
+				}
+				manifest[relPath] = ManifestEntry{SyncedModTime: info.ModTime().UTC().Format(time.RFC3339), SyncedHash: contentHash(localData)}
+				return nil
+			}
+		}
+	}
 	if expected != nil {
 		info, err := client.Stat(remotePath)
 		if err != nil {
@@ -522,7 +539,7 @@ func (a *App) SaveSyncSettings(enabled bool, url, username, password string, int
 		return Settings{}, err
 	}
 	if intervalMinutes < 1 {
-		intervalMinutes = 30
+		intervalMinutes = 5
 	}
 	s.SyncEnabled = enabled
 	s.SyncURL = strings.TrimRight(strings.TrimSpace(url), "/")
@@ -581,6 +598,10 @@ func (a *App) runSync() SyncResult {
 
 	result := performSync(s)
 
+	current, err := loadSettings()
+	if err == nil {
+		s = current
+	}
 	s.LastSyncTime = time.Now().UTC().Format(time.RFC3339)
 	s.LastSyncError = result.Message
 	if result.Success {
@@ -620,7 +641,7 @@ func (a *App) runSyncLoop(ctx context.Context) {
 		}
 		interval := time.Duration(s.SyncIntervalMinutes) * time.Minute
 		if interval <= 0 {
-			interval = 30 * time.Minute
+			interval = 5 * time.Minute
 		}
 		if s.LastSyncTime != "" {
 			if last, err := time.Parse(time.RFC3339, s.LastSyncTime); err == nil && time.Since(last) < interval {

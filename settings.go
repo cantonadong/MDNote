@@ -85,13 +85,13 @@ func loadSettings() (Settings, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return Settings{}, nil
+			return Settings{SyncIntervalMinutes: 5}, nil
 		}
 		return Settings{}, err
 	}
 	defer f.Close()
 
-	var s Settings
+	s := Settings{SyncIntervalMinutes: 5}
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())

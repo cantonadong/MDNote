@@ -52,8 +52,10 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
+    if (e.isComposing || e.repeat) return;
     if (e.key === "Enter") {
       e.preventDefault();
+      e.stopPropagation();
       submit();
     } else if (e.key === "Escape") {
       e.preventDefault();

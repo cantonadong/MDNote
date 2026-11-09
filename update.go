@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	appVersion       = "2.3.0"
+	appVersion       = "2.4.0"
 	latestReleaseURL = "https://api.github.com/repos/cantonadong/MDNote/releases/latest"
 	updateAssetName  = "MDNote.exe"
 )
@@ -112,7 +112,9 @@ func newerVersion(remote, current string) bool {
 func dirtyGitWorktree(startDir string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", startDir, "status", "--porcelain").Output()
+	cmd := exec.CommandContext(ctx, "git", "-C", startDir, "status", "--porcelain")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	out, err := cmd.Output()
 	return err == nil && len(bytes.TrimSpace(out)) > 0
 }
 

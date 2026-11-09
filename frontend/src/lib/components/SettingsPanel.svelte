@@ -31,7 +31,7 @@
   let syncURL = $state(appState.settings.syncURL);
   let syncUsername = $state(appState.settings.syncUsername);
   let syncPassword = $state(appState.settings.syncPassword);
-  let syncInterval = $state(appState.settings.syncIntervalMinutes || 30);
+  let syncInterval = $state(appState.settings.syncIntervalMinutes || 5);
   let testState = $state<"idle" | "testing" | "ok" | "error">("idle");
   let testMessage = $state("");
   let saveState = $state<"idle" | "saved">("idle");

@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 )
 
 // FileEntry describes one child of a directory listing for the left-hand file tree.
@@ -124,8 +123,14 @@ var noteFilesMu sync.Mutex
 
 func conflictCopy(filePath string, data []byte) (string, error) {
 	ext := filepath.Ext(filePath)
-	name := strings.TrimSuffix(filePath, ext) + ".conflict-" + time.Now().UTC().Format("20060102-150405.000000000") + ext
+	name := strings.TrimSuffix(filePath, ext) + ".conflict-" + contentHash(data)[:16] + ext
 	f, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if os.IsExist(err) {
+		existing, readErr := os.ReadFile(name)
+		if readErr == nil && bytes.Equal(existing, data) {
+			return name, nil
+		}
+	}
 	if err != nil {
 		return "", err
 	}

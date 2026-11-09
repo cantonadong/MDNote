@@ -7,7 +7,7 @@
   // focus while this overlay is just a visually-on-top div) and insert a
   // newline there invisibly behind the dialog, in addition to resolving it.
   function onKeydownCapture(e: KeyboardEvent) {
-    if (e.key !== "Enter") return;
+    if (e.key !== "Enter" || e.isComposing || e.repeat) return;
     if (appState.pendingClose) {
       e.preventDefault();
       e.stopPropagation();
@@ -19,6 +19,10 @@
       e.stopPropagation();
       // "删除高于取消": Enter confirms the delete.
       appState.resolvePendingDelete(true);
+    } else if (appState.updateStatus.ready && !appState.pendingWebLink) {
+      e.preventDefault();
+      e.stopPropagation();
+      void appState.applyUpdate();
     }
   }
 </script>

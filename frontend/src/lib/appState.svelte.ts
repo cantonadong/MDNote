@@ -103,7 +103,7 @@ class AppState {
     syncURL: "",
     syncUsername: "",
     syncPassword: "",
-    syncIntervalMinutes: 30,
+    syncIntervalMinutes: 5,
     syncVerified: false,
     lastSyncTime: "",
     lastSyncError: "",
@@ -483,7 +483,20 @@ class AppState {
     tab.missing = !(await api.fileExists(tab.path));
   }
 
+  private tabSaves = new Map<string, Promise<boolean>>();
+
   async saveTab(tab: Tab): Promise<boolean> {
+    const previous = this.tabSaves.get(tab.id);
+    const pending = (previous ?? Promise.resolve(true)).then(() => this.writeTab(tab));
+    this.tabSaves.set(tab.id, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.tabSaves.get(tab.id) === pending) this.tabSaves.delete(tab.id);
+    }
+  }
+
+  private async writeTab(tab: Tab): Promise<boolean> {
     if (tab.id === this.activeTabId) this.flushActiveEditorContent();
     if (!tab.path) {
       return this.saveTabAs(tab);
